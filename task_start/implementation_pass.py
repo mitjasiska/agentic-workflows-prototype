@@ -9,6 +9,7 @@ import time
 from uuid import uuid4
 
 from . import TaskError
+from .metrics import observe_run
 from .agent import AgentExecution, AgentOptions, adapter_for, codex_repository_policy
 from .contexts import context_observer, context_reference, launch_allocated, pending_launch, reconcile
 from .handoff import implementation_handoff
@@ -98,7 +99,7 @@ def initial_execution(env, options):
 
 
 def implementation_pass(env, expected, findings, timeout, before_handoff, pass_observer, *, initial_options=None,
-                        delivery=None):
+                        delivery=None, metrics_context=None):
     fresh = initial_options is not None
     if fresh:
         execution = initial_execution(env, initial_options)
@@ -190,42 +191,48 @@ def implementation_pass(env, expected, findings, timeout, before_handoff, pass_o
             expected, reference = observed, observed["session"]
             pass_observer(context["context_id"], pass_id, observed)
 
-        if fresh:
-            execution = replace(execution, runtime_observer=observe_initial)
-            launch_allocated(adapter, execution, context["context_id"], env.registry, env.identities,
-                             persist_observer=persist)
-            # Keep the guard (including any verified identity) active across launch.
-            def observe(values):
-                persist(values)
-                observe_initial()
-            execution = replace(execution, runtime_observer=observe)
-        else:
-            adapter.resume(execution, reference, recreate=False)
-        if delivery:
-            delivery.started()
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            current, notes = reconcile(env.registry.get(context["context_id"]), env.identities.snapshot())
-            if (current is None or current["terminal_id"] != pane["terminal_id"]
-                    or any(n in {"agent mismatch", "session mismatch", "session identity invalid"} for n in notes)):
-                raise TaskError("Implementation runtime identity changed during its pass")
-            status = adapter.status(execution, pane["terminal_id"], reference)
+        with observe_run() as metric:
+            metric.start(env.registry, env.issue, execution.options, "fix" if findings else "implementation",
+                         run_id=pass_id, context_id=context["context_id"], **(metrics_context or {}))
             if fresh:
-                observe_initial()
-            if status == "blocked":
-                raise TaskError("Implementation agent requires human intervention")
-            if status in {"idle", "done"} and output.exists():
-                if output.is_symlink() or not output.is_file() or output.stat().st_size > 1024 * 1024:
-                    raise TaskError("Invalid implementation result file")
-                raw = delivery.verify(adapter, execution) if delivery else output.read_text(encoding="utf-8")
-                if raw is None:
-                    time.sleep(0.25)
-                    continue
-                result = parse_implementation(raw, pass_id, findings,
-                                              assessment_enabled=assessment.enabled)
-                if fresh and reference is None:
-                    raise TaskError("Initial implementation has no verified conversation identity")
-                implementation_target(env, expected)  # Provider/runtime verification after completion.
-                return dict(result, context_id=context["context_id"], findings=[])
-            time.sleep(0.25)
-        raise TaskError("Timed out waiting for validated implementation output; inspect its context before recovery")
+                execution = replace(execution, runtime_observer=observe_initial)
+                launch_allocated(adapter, execution, context["context_id"], env.registry, env.identities,
+                                 persist_observer=persist)
+                # Keep the guard (including any verified identity) active across launch.
+                def observe(values):
+                    persist(values)
+                    observe_initial()
+                execution = replace(execution, runtime_observer=observe)
+            else:
+                adapter.resume(execution, reference, recreate=False)
+            if delivery:
+                delivery.started()
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                current, notes = reconcile(env.registry.get(context["context_id"]), env.identities.snapshot())
+                if (current is None or current["terminal_id"] != pane["terminal_id"]
+                        or any(n in {"agent mismatch", "session mismatch", "session identity invalid"} for n in notes)):
+                    raise TaskError("Implementation runtime identity changed during its pass")
+                status = adapter.status(execution, pane["terminal_id"], reference)
+                if fresh:
+                    observe_initial()
+                if status == "blocked":
+                    metric.outcome("blocked")
+                    raise TaskError("Implementation agent requires human intervention")
+                if status in {"idle", "done"} and output.exists():
+                    if output.is_symlink() or not output.is_file() or output.stat().st_size > 1024 * 1024:
+                        raise TaskError("Invalid implementation result file")
+                    raw = delivery.verify(adapter, execution) if delivery else output.read_text(encoding="utf-8")
+                    if raw is None:
+                        time.sleep(0.25)
+                        continue
+                    result = parse_implementation(raw, pass_id, findings,
+                                                  assessment_enabled=assessment.enabled)
+                    if fresh and reference is None:
+                        raise TaskError("Initial implementation has no verified conversation identity")
+                    implementation_target(env, expected)  # Provider/runtime verification after completion.
+                    metric.outcome(result["state"])
+                    return dict(result, context_id=context["context_id"], findings=[])
+                time.sleep(0.25)
+            metric.outcome("timed_out")
+            raise TaskError("Timed out waiting for validated implementation output; inspect its context before recovery")

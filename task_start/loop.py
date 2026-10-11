@@ -12,6 +12,7 @@ from uuid import uuid4
 from . import TaskError
 from .ownership import ownership_operation
 from .agent import AgentExecution, AgentOptions, AgentOverrides, adapter_for, resolve_agent_options
+from .metrics import observe_loop
 from .config import (check_project_settings_unchanged, load_local, load_projects, project_settings,
                      repository_path, resolve_project)
 from .contexts import ContextRegistry, HerdrContexts, allocate_launch, pending_launch, context_observer, context_reference
@@ -283,6 +284,11 @@ class LoopRuntime:
     def execute(self, state, before_handoff, pass_observer):
         env, phase = self.env, state["next_phase"]
         delivery = PassDelivery(state, pass_observer, env)
+        metrics_context = dict(loop_id=state["run_id"],
+            previous_run_id=state["records"][-1]["pass_id"] if state["records"] else None,
+            implementation_context_id=state["implementation"]["context_id"],
+            review_round=state["review_count"] + 1 if phase in {"review", "rereview"}
+                         else state["review_count"] or None)
         if phase in {"initial_implementation", "implementation", "fixes"}:
             saved = self.publication.read()
             if saved["rebase"] is not None and saved["rebase"].get("result") is None:
@@ -294,7 +300,8 @@ class LoopRuntime:
             result = implementation_pass(env, state["implementation"], state["findings"], state["timeout"],
                                        before_handoff, pass_observer,
                                        initial_options=AgentOptions(**state["implementation_options"])
-                                       if phase == "initial_implementation" else None, delivery=delivery)
+                                       if phase == "initial_implementation" else None, delivery=delivery,
+                                       metrics_context=metrics_context)
             self.completed_snapshot = delivery.completed_snapshot
             return result
         options = state["reviewer_options"]
@@ -307,7 +314,8 @@ class LoopRuntime:
             options["model"] if phase == "review" else None,
             options["mode"] if phase == "review" else None,
             state["timeout"], self.publication, loop_feedback=feedback,
-            before_handoff=before_handoff, pass_observer=pass_observer, delivery=delivery)
+            before_handoff=before_handoff, pass_observer=pass_observer, delivery=delivery,
+            metrics_context=metrics_context)
         self.completed_snapshot = getattr(delivery, "completed_snapshot", None)
         if result.context_id and result.state in {"clean", "findings"}:
             state["reviewer"] = binding(env.registry.get(result.context_id))
@@ -442,7 +450,7 @@ def drive(store, state, runtime, *, on_pass_result=None):
     on_pass_result is an optional future persistence seam, invoked only after the
     completed result and next boundary are checkpointed. It never owns routing.
     """
-    def collect(result):
+    def collect(result, *, recovered=False):
         delivery = PassDelivery(state, lambda *_: store.save(state), runtime.env) if state.get("delivery") else None
         try:
             after = runtime.snapshot()
@@ -455,6 +463,7 @@ def drive(store, state, runtime, *, on_pass_result=None):
             raise TaskError("Checkout changed after completion verification; retained pass cannot be accepted")
         route(state, result, after)
         store.save(state)
+        observe_loop(runtime.env, state, recovered_result=result if recovered else None)
         if on_pass_result:
             on_pass_result(copy.deepcopy(result))
 
@@ -466,7 +475,7 @@ def drive(store, state, runtime, *, on_pass_result=None):
 
     try:
         if state["active_pass"] is not None:
-            collect(runtime.recover(state, lambda *_: store.save(state)))
+            collect(runtime.recover(state, lambda *_: store.save(state)), recovered=True)
         clean_delivery()
         if state["status"] in {"interrupted", "escalated"} and state["records"] and state["next_phase"] is not None:
             state.update(status="ready", reason="Completed pass retained; revalidating the next boundary")
@@ -531,6 +540,7 @@ def drive(store, state, runtime, *, on_pass_result=None):
             state["reason"] = (f"{error}. No initial handoff was claimed; rerun task loop {runtime.identifier} "
                                "to revalidate and reuse the original reservation")
     store.save(state)
+    observe_loop(runtime.env, state)
     return report(*store.read())
 
 

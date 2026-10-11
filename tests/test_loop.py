@@ -17,6 +17,7 @@ from task_start.config import ReviewValidationConfig
 from task_start.implementation_pass import parse_implementation
 from task_start.loop import loop
 from task_start.loop_state import LoopStore
+from task_start.metrics import MetricsStore
 from task_start.review_result import parse_verdict
 import test_review as review_fixture
 import pass_delivery_fixture as delivery_fixture
@@ -409,6 +410,42 @@ class LoopIntegrationTests(unittest.TestCase):
         self.assertIn("focused re-review", self.prompts[1])
         self.assertEqual(result.data["resolutions"], [dict(finding_id="F1", summary="Fixed F1")])
         self.assertEqual({o.model for o in self.options}, {"review-model"})
+        metrics = MetricsStore(self.registry.path).read()
+        state, _ = self.store.read()
+        self.assertEqual([r["run_id"] for r in metrics], [r["pass_id"] for r in state["records"]])
+        self.assertEqual([r["role"] for r in metrics], ["implementation", "review", "fix", "re-review"])
+        self.assertEqual([r["review_round"] for r in metrics], [None, 1, 1, 2])
+        self.assertEqual([r["previous_run_id"] for r in metrics], [None] + [r["run_id"] for r in metrics[:-1]])
+        self.assertEqual([r["model"] for r in metrics], ["implementation", "review-model"] * 2)
+        self.assertTrue(all(r["loop_id"] == state["run_id"] and r["status"] == "completed" for r in metrics))
+        self.assertTrue(all(r["implementation_context_id"] == self.implementation for r in metrics))
+        self.assertTrue(all(r["finished_at"] is not None and r["wall_clock_seconds"] >= 0 for r in metrics))
+        self.assertEqual((metrics[1]["review_outcome"], metrics[1]["findings_count"]), ("findings", 1))
+        self.assertEqual((metrics[3]["review_outcome"], metrics[3]["findings_count"]), ("clean", 0))
+        self.assertEqual(metrics[3]["loop_status"], "clean")
+
+    def test_metrics_write_failure_does_not_change_loop_or_clean_acceptance(self):
+        with patch("task_start.metrics.MetricsStore.write", side_effect=OSError("disk unavailable")):
+            result = self.run_loop()
+        self.assertEqual(result.state, "clean", result.render())
+        from task_start.publication_state import PublicationStore
+        accepted = PublicationStore(self.path).read()["acceptance"]
+        self.assertEqual(accepted["pass_id"], self.store.read()[0]["records"][-1]["pass_id"])
+
+    def test_corrupt_metrics_do_not_authorize_or_block_review(self):
+        metrics = MetricsStore(self.registry.path)
+        metrics.directory.mkdir(mode=0o700)
+        path = metrics.directory / "runs.json"
+        path.write_text('{"version":1,"runs":[{"review_outcome":"clean"}]}')
+        path.chmod(0o600)
+        original = path.read_bytes()
+        self.raw = "malformed actual verdict"
+        result = self.run_loop()
+        self.assertEqual(result.state, "escalated")
+        from task_start.publication_state import PublicationStore
+        self.assertIsNone(PublicationStore(self.path).read()["acceptance"])
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual((len(self.impl_prompts), len(self.prompts)), (1, 1))
 
     def test_multiple_review_iterations_and_partial_progress(self):
         self.review_results = [findings(finding(), finding(2)), findings(finding(2)), {}]
@@ -526,6 +563,9 @@ class LoopIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(state["active_pass"]["pass_id"])
         self.assertEqual(state["records"], [])
         self.assertEqual(self.prompts, [])
+        metric, = MetricsStore(self.registry.path).read()
+        self.assertEqual((metric["status"], metric["loop_status"]), ("interrupted", "interrupted"))
+        self.assertEqual(metric["run_id"], state["active_pass"]["pass_id"])
         with self.assertRaisesRegex(TaskError, "Only a paused"):
             self.continue_loop()
 
@@ -645,6 +685,8 @@ class LoopIntegrationTests(unittest.TestCase):
         self.assertIn("Timed out", result.data["reason"])
         self.assertEqual(self.prompts, [])
         self.assertIsNotNone(result.data["active_pass"])
+        metric, = MetricsStore(self.registry.path).read()
+        self.assertEqual((metric["status"], metric["loop_status"]), ("timed_out", "escalated"))
 
     def test_failed_checks_cannot_claim_implementation_completion(self):
         self.impl_overrides = dict(checks=[dict(name="unit", result="failed", details="Failure")])
@@ -652,6 +694,7 @@ class LoopIntegrationTests(unittest.TestCase):
         self.assertEqual(result.state, "escalated")
         self.assertIn("ambiguous", result.data["reason"])
         self.assertEqual(self.prompts, [])
+        self.assertEqual(MetricsStore(self.registry.path).read()[0]["status"], "failed")
 
     def test_blocked_implementation_reports_human_action_without_review(self):
         self.impl_overrides = dict(state="blocked", summary="Need a product decision")
@@ -660,6 +703,8 @@ class LoopIntegrationTests(unittest.TestCase):
         self.assertIn("product decision", result.data["reason"])
         self.assertEqual(len(result.data["implementation"]), 1)
         self.assertIsNone(result.data["active_pass"])
+        metric, = MetricsStore(self.registry.path).read()
+        self.assertEqual((metric["status"], metric["loop_status"]), ("blocked", "escalated"))
 
     def test_reviewer_failure_is_not_retried(self):
         self.raw = "malformed"
