@@ -78,9 +78,20 @@ class RecoveryTests(unittest.TestCase):
                 case.setUp()
                 try:
                     case.impl_overrides = dict(checks=[dict(name="live", result="not_run", details="Offline fixture only")])
-                    before = case.interrupt(phase)
+                    clock = SimpleNamespace(now=2000000000.0)
+                    complete = loops.delivery_fixture.complete
+                    def late_complete(execution):
+                        clock.now += 1278  # 21m08s after this fixture's 10s threshold.
+                        return complete(execution)
+                    with patch("task_start.pass_delivery.time", SimpleNamespace(time=lambda: clock.now)), \
+                            patch.object(loops.delivery_fixture, "complete", side_effect=late_complete):
+                        before = case.interrupt(phase)
                     directory = Path(before["delivery"]["directory"])
-                    result = loop("DEV-7")
+                    proof = json.loads((directory / "completion.json").read_text())
+                    case.assertEqual(proof["completed_at"] - before["delivery"]["deadline"], 1268)
+                    with patch("task_start.pass_delivery.time", SimpleNamespace(time=lambda: clock.now)), \
+                            patch("sys.stderr", new_callable=io.StringIO):
+                        result = loop("DEV-7")
                     case.assertEqual(result.state, "clean", result.render())
                     after = case.store.read()[0]
                     case.assertEqual(after["run_id"], before["run_id"])
@@ -197,17 +208,25 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(PublicationStore(self.path).read()["acceptance"]["pass_id"], before["active_pass"]["pass_id"])
 
     def test_lost_or_conflicting_evidence_never_replays(self):
-        for change in ("missing", "truncated", "forged", "wrong_pass", "session", "moved", "git", "issue", "base", "slice", "receipt", "symlink"):
+        for change in ("truncated", "forged", "wrong_pass", "session", "moved", "git", "issue", "base", "slice", "receipt", "symlink", "seal_run", "seal_pass", "seal_partial", "seal_hash"):
             with self.subTest(change=change):
                 case = RecoveryTests(); case.setUp()
                 try:
                     state = case.interrupt("implementation")
                     directory = Path(state["delivery"]["directory"])
                     output = directory / "result.json"
-                    if change == "missing":
-                        output.unlink()
-                        state["delivery"]["deadline"] = time.time() - 1
-                        case.store.save(state)
+                    # Expired legacy thresholds do not bypass any integrity checks.
+                    state["delivery"]["deadline"] = time.time() - 1268
+                    case.store.save(state)
+                    if change.startswith("seal_"):
+                        seal_file = directory / "completion.json"
+                        proof = json.loads(seal_file.read_text())
+                        key = {"seal_run": "run_id", "seal_pass": "pass_id", "seal_hash": "result_sha256"}
+                        if change == "seal_partial":
+                            seal_file.write_text('{"run_id":')
+                        else:
+                            proof[key[change]] = "forged"
+                            seal_file.write_text(json.dumps(proof))
                     elif change == "truncated":
                         output.write_text('{"pass_id":')
                     elif change in {"forged", "wrong_pass"}:
@@ -372,7 +391,7 @@ class RecoveryTests(unittest.TestCase):
                 loop("DEV-7", **options)
         self.assertEqual(loop("DEV-7").state, "clean")
 
-    def test_claim_before_delivery_and_expired_output_refuse_new_or_replay(self):
+    def test_claim_before_delivery_refuses_new_or_replay(self):
         with patch.object(PassDelivery, "attach", side_effect=KeyboardInterrupt()):
             result = loop("DEV-7", timeout=10)
         self.assertEqual(result.state, "interrupted")
@@ -382,7 +401,7 @@ class RecoveryTests(unittest.TestCase):
             loop("DEV-7", action="new")
         self.assertEqual(self.impl_prompts, [])
 
-    def test_complete_output_survives_deadline_but_late_seal_does_not(self):
+    def test_complete_output_survives_controller_downtime(self):
         state = self.interrupt("implementation")
         with patch("task_start.loop.time.time", return_value=state["delivery"]["deadline"] + 1):
             # Completion happened on time; controller downtime does not erase it.
@@ -404,16 +423,6 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(PublicationStore(self.path).read()["acceptance"], before)
         self.assertFalse(directory.exists())
         self.assertEqual((len(self.impl_prompts), len(self.prompts), len(accepted)), (1, 1, 2))
-
-    def test_late_completion_seal_does_not_reset_timeout(self):
-        state = self.interrupt("implementation")
-        proof = json.loads((Path(state["delivery"]["directory"]) / "completion.json").read_text())
-        state["delivery"]["deadline"] = proof["completed_at"] - 0.01
-        self.store.save(state)
-        result = loop("DEV-7")
-        self.assertEqual(result.state, "escalated")
-        self.assertIn("seal is invalid", result.data["reason"])
-        self.assertEqual(len(self.impl_prompts), 1)
 
     def test_partial_result_while_provider_working_remains_pending(self):
         state = self.interrupt("implementation")
@@ -550,11 +559,13 @@ class ProcessRecoveryTests(unittest.TestCase):
                                   error=None, itemsView="full", items=items)], nextCursor=None)
         self.fail(method)
 
-    def controller(self, name):
+    def controller(self, name, threshold=20):
         output = self.root / (name + ".json")
+        diagnostics = self.root / (name + ".stderr")
         def run():
-            with output.open("w") as target, patch("sys.stdout", target):
-                code = cli.main(["loop", "DEV-7", "--json", "--timeout", "20"])
+            with output.open("w") as target, diagnostics.open("w") as errors, \
+                    patch("sys.stdout", target), patch("sys.stderr", errors):
+                code = cli.main(["loop", "DEV-7", "--json", "--timeout", str(threshold)])
             os._exit(code)
         process = multiprocessing.get_context("fork").Process(target=run)
         process.start(); self.processes.append(process)
@@ -618,6 +629,42 @@ class ProcessRecoveryTests(unittest.TestCase):
         self.assertEqual(len(self.read_provider()["prompts"]), 1)
         self.assertEqual([c["context_id"] for c in self.registry.list()], ["DEV-7-I1", "DEV-7-R1"])
         self.assertIn(dict(name="live", result="not_run", details="Controlled provider fixture"), result["validation"])
+
+    def test_overdue_controller_crash_keeps_turn_time_and_collects_late_seal_once(self):
+        first, _ = self.controller("first", threshold=1)
+        first_errors = self.root / "first.stderr"
+        self.wait_until(lambda: first_errors.exists() and "warning threshold" in first_errors.read_text())
+        self.store = LoopStore(self.path)
+        before = self.store.read()[0]
+        self.assertTrue(first.is_alive())
+        self.assertEqual(before["status"], "running")
+        self.assertIsNone(self.read_provider().get("completion"))
+        os.kill(first.pid, signal.SIGKILL)
+        first.join(10)
+        self.assertFalse(first.is_alive())
+        second, output = self.controller("second", threshold=1)
+        second_errors = self.root / "second.stderr"
+        self.wait_until(lambda: second_errors.exists() and "warning threshold" in second_errors.read_text())
+        self.assertTrue(second.is_alive())
+        self.assertEqual(self.store.read()[0]["delivery"], before["delivery"])
+        self.assertEqual(len(self.read_provider()["prompts"]), 1)
+        self.store.pause()  # Keep late implementation consumption inspectable.
+        self.gate.touch()
+        second.join(15)
+        self.assertFalse(second.is_alive())
+        self.assertEqual(json.loads(output.read_text())["state"], "paused")
+        after = self.store.read()[0]
+        self.assertEqual(after["records"][0]["pass_id"], before["active_pass"]["pass_id"])
+        self.assertEqual(after["run_id"], before["run_id"])
+        self.assertEqual(after["timeout"], 1)
+        self.assertEqual(first_errors.read_text().count("warning threshold"), 1)
+        self.assertEqual(second_errors.read_text().count("warning threshold"), 1)
+        # Parent's resumed controller uses the same fixture provider history.
+        result = loop("DEV-7", action="continue")
+        self.assertEqual(result.state, "clean", result.render())
+        self.assertEqual((result.data["passes"], result.data["reviews"]), (2, 1))
+        self.assertEqual(len(self.read_provider()["prompts"]), 1)
+        self.assertEqual([c["context_id"] for c in self.registry.list()], ["DEV-7-I1", "DEV-7-R1"])
 
     def test_ctrl_c_complete_then_restart(self):
         self.scenario(signal.SIGINT, False)

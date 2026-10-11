@@ -208,7 +208,9 @@ def implementation_pass(env, expected, findings, timeout, before_handoff, pass_o
             if delivery:
                 delivery.started()
             deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
+            while delivery or time.monotonic() < deadline:
+                if delivery:
+                    delivery.warn_if_overdue()
                 current, notes = reconcile(env.registry.get(context["context_id"]), env.identities.snapshot())
                 if (current is None or current["terminal_id"] != pane["terminal_id"]
                         or any(n in {"agent mismatch", "session mismatch", "session identity invalid"} for n in notes)):

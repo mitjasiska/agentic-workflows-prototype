@@ -97,7 +97,7 @@ def parser() -> argparse.ArgumentParser:
     add_agent_options(loop_command, prefix="r-", role="reviewer")
     loop_command.add_argument("--max-reviews", type=int, help="Review limit (default 3; maximum 20)")
     loop_command.add_argument("--max-passes", type=int, help="Total pass limit (default 6; maximum 40)")
-    loop_command.add_argument("--timeout", type=int, metavar="SECONDS", help="Wait per pass (configured [loop] timeout or 1800; maximum 86400)")
+    loop_command.add_argument("--timeout", type=int, metavar="SECONDS", help="Advisory warning threshold per pass; keeps observing (configured [loop] timeout or 7200; maximum 86400)")
     loop_command.add_argument("--json", action="store_true", help="Print the combined lifecycle result")
     pr_command = commands.add_parser("pr", help="Commit and publish the exact clean-reviewed task as a GitHub PR")
     pr_command.add_argument("issue", type=issue_identifier)

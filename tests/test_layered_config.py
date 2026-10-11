@@ -55,7 +55,7 @@ class LayeredConfigTests(unittest.TestCase):
                     "review_validation", "task_assessment", "implementation_scope"):
             self.assertEqual(getattr(resolved, key), getattr(self.local, key))
         self.assertEqual(self.local.agent.model, "global-i")
-        self.assertEqual(self.local.loop_timeout, 1800)
+        self.assertEqual(self.local.loop_timeout, 7200)
 
     def test_missing_layers_and_empty_tables_preserve_defaults(self):
         self.directory.rmdir()
@@ -80,6 +80,8 @@ class LayeredConfigTests(unittest.TestCase):
                 load_local()
             new = self.root / CONFIG_DIRECTORY
             new.mkdir()
+            (new / "config.toml").write_text(content)
+            self.assertEqual(load_local().loop_timeout, 7200)
             (new / "config.toml").write_text(content + '[loop]\ntimeout=222\n[agent]\nmodel="partial"\n')
             loaded = load_local()
             self.assertEqual(loaded.loop_timeout, 222)
@@ -137,7 +139,7 @@ class LayeredConfigTests(unittest.TestCase):
                 path.write_text(base + content)
                 with self.assertRaises(TaskError):
                     load_local(path)
-                self.assertEqual(load_local(path, no_agent=True).loop_timeout, 1800)
+                self.assertEqual(load_local(path, no_agent=True).loop_timeout, 7200)
 
     def test_unsafe_file_kinds_and_links_fail_closed(self):
         outside = self.root / "outside.toml"

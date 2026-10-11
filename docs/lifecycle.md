@@ -246,8 +246,8 @@ history. A visible `READY` never establishes task delivery. Persistent errors
 retain the context with pane/session inspection and loop-abort guidance.
 
 Do not rerun `start`, `review`, `loop`, or `integrate` to get past trust. The original
-command retains the handoff and result paths, and the execution timeout
-starts after launch/delivery completes. It neither launches a replacement nor
+command retains the handoff and result paths. The execution timeout (or loop
+warning threshold) starts after launch/delivery completes. It neither launches a replacement nor
 replays a queued prompt. `loop --continue` is for saved loop pause boundaries;
 it does not acknowledge a startup trust dialog.
 
@@ -387,8 +387,9 @@ Herdr may infer `idle` while Pi is still working. Idle/done without a structured
 result, startup gaps, and temporarily absent/unknown observations remain pending;
 elapsed startup time or an earlier working observation does not establish completion.
 Acceptance requires validated output and idle/done, plus final identity/state checks.
-Without conclusive output or a verified failure, the existing workflow timeout bounds
+Without conclusive output or a verified failure, the standalone review timeout bounds
 the wait, including when a stopped process is only reported as absent/unknown.
+Loop-owned reviews instead use the advisory threshold described under [task loop](#task-loop).
 
 The handoff separates authoritative read-only review instructions, resolved and
 pinned metadata, and latest Linear requirements. Embedded implementation-agent
@@ -564,19 +565,40 @@ classifies findings from free-form explanations.
 Fix results identify every supplied finding and describe the claimed resolution;
 the reviewer independently checks those claims. Duplicate/missing/unknown IDs,
 malformed output, failed checks claimed as completed work, blocked agents,
-delivery/identity failures, or absent output stop for inspection. No transport or
+or delivery/identity failures stop for inspection. Absent output remains pending
+while the original loop pass can still be observed. No transport or
 uncertain pass is automatically redelivered; recovery only observes its original execution. An unchanged content snapshot after
 fixes, repeated finding-ID sets, identical findings with renamed IDs, or retention
 of every previous unresolved ID also stops as non-progress.
 
 Defaults are at most three review passes, six total implementation/review passes,
-and 1800 seconds of waiting per delivered pass. Startup keeps the adapters' own
-bounded receipt checks. `--max-reviews` accepts 1–20, `--max-passes` accepts 1–40,
-and `--timeout` accepts 1–86400 seconds. These bounds persist across pauses.
-The initial implementation consumes one total pass and its configured wait timeout;
+and a two-hour (7200-second) **warning threshold** per delivered pass. Startup keeps
+the adapters' own bounded receipt checks. `--max-reviews` accepts 1–20,
+`--max-passes` accepts 1–40, and the compatible `--timeout` flag accepts 1–86400
+seconds. `[loop] timeout` configures the same threshold. These settings persist
+across pauses. The initial implementation consumes one total pass;
 review count remains zero until review runs. Exhausting the review budget stops
 before fixes that could not be re-reviewed.
 Selection, timeout, and limit flags cannot accompany controls.
+
+Elapsed wall-clock time is advisory, not a token budget or an automatic stop.
+Implementation, fresh review, fixes, and re-review keep observing the original
+turn after the threshold. One informational warning per pass per uninterrupted
+controller invocation goes to stderr, leaving `--json` stdout parseable. It names
+the issue/pass, elapsed time, and operator choices. A restarted controller may
+emit one reminder for that still-pending pass; it does not reset the timestamp.
+`--status` reports whether the threshold is exceeded without changing lifecycle
+state. `--status --json` includes `pass_timing` for an active delivered pass:
+`threshold_seconds`, `warning_at` (Unix timestamp), and `overdue`. This is saved
+pass timing, not proof of current agent activity; inspection does not poll or
+resume an agent.
+
+Leave a long-running agent working, request `--pause-after-current` from another
+terminal, or inspect `--status`. Ctrl+C stops the waiting controller, **not
+necessarily the Codex turn**. To stop/abandon explicitly, stop the controller,
+quit the task agents, then follow [abort](#explicit-abort-without-discarding-work)
+to preserve work or [forced cleanup](#forced-local-execution-disposal) to discard
+it. A pause still waits for verified completion before the next handoff.
 
 The compact final report includes implementation summaries, review iterations,
 substantive findings, claimed fixes, validation and limitations, final review
@@ -597,8 +619,8 @@ An interrupted agent turn may leave that controller waiting for a result that
 will never arrive. To deliberately abandon that pass:
 
 1. Press Ctrl+C in the **controller's terminal** if it is still waiting. There is
-   no need to wait for the pass timeout. If only the controller stopped and the
-   agent is still working, ordinary recovery remains available instead.
+   no need to wait for the pass warning threshold. If only the controller stopped
+   and the agent is still working, ordinary recovery remains available instead.
 2. Quit the task's Codex/Pi runtimes, including an interrupted session still open
    at an idle prompt, back to their original shells. Keep those panes open and
    stop their child/background jobs. Quitting retains persisted conversations.
@@ -764,8 +786,9 @@ termination. The publication lock first excludes another controller. The command
 then validates the saved requirements, issue/worktree/base, context, model/mode,
 provider conversation and exact pane/terminal. It observes the same pass while
 that agent is working, without sending input, restarting an agent, moving a pane,
-or allocating a replacement. The original timeout and pass/review limits remain
-in force. Conflicting supplied settings are refused; matching settings are allowed.
+or allocating a replacement. The original warning timestamp, configured threshold,
+and pass/review limits remain in force. Conflicting supplied settings are refused;
+matching settings are allowed.
 
 Before delivery, the existing checkpoint retains the run/pass nonce, session and
 location, prompt digest and provider receipt selector. It also names one private
@@ -803,11 +826,19 @@ is a graceful pause. A sticky `--pause-after-current` request survives recovery:
 collect the original pass, then stop at `paused` before the next handoff.
 `--continue` still accepts only a paused boundary.
 
-Absent, truncated, stale, conflicting, forged or late results stop with a diagnostic
-and retain the original claim. A seal written within the saved timeout may be
-collected after controller downtime; restarting never extends an unfinished
-pass's deadline. Restore transient provider access or the original runtime's
-observable identity, then repeat the command. Do not edit evidence, infer success
+A valid completion sealed before or after the original threshold can be collected,
+including from older hard-deadline checkpoints that escalated on timeout. The saved
+`delivery.deadline` remains the original warning timestamp; no checkpoint or seal
+needs editing, and the original run/pass IDs and actual completion time remain
+authoritative. Restarting never resets elapsed time. Every receipt, checksum,
+session, requirement, Git/base, review, and publication check still applies; base
+advancement or other drift requires the existing explicit recovery boundaries.
+
+Missing output remains pending; truncated, stale, conflicting, or forged completion
+evidence refuses acceptance and retains the original claim. Partial files are
+pending only while the exact provider turn is demonstrably still working. Unknown
+output or an idle agent never implies success. Restore transient provider access or
+the original runtime's observable identity, then repeat the command. Do not edit evidence, infer success
 from a transcript, reset a checkpoint, or resend a claimed prompt. Use the
 [explicit abort sequence](#explicit-abort-without-discarding-work) to abandon a
 proven stopped pass while preserving work. If its required identity/process

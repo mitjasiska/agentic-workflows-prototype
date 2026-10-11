@@ -258,7 +258,8 @@ role-prefixed overrides.
 
 Run `--pause-after-current` from another terminal while the command is working.
 The current pass finishes; the next handoff waits for explicit `--continue`.
-`--status` only inspects. Ctrl+C leaves the agent's completion uncertain; ordinary
+`--status` only inspects, including whether the pass warning threshold is exceeded.
+Ctrl+C stops the waiting controller, not necessarily the agent turn; ordinary
 `task loop DEV-7` reconciles it, while `--continue` remains exclusive to pauses.
 To deliberately abandon an interrupted pass, stop the waiting controller with
 Ctrl+C, quit task agents to their original shells while keeping panes open, then
@@ -267,10 +268,13 @@ stopped registered executions and preserves implementation files and session
 history. Stop manually detached helpers before reuse; abort does not prove
 machine-wide checkout non-use. See the [abort sequence](docs/lifecycle.md#explicit-abort-without-discarding-work) for
 fresh review and incomplete-implementation continuation.
-Defaults are three reviews, six total passes,
-and 1800 seconds per delivered pass; use `--max-reviews`, `--max-passes`, and
-`--timeout` when starting the loop. The initial implementation counts as one pass;
-review counts begin when review runs.
+Defaults are three reviews, six total passes, and a two-hour (7200-second)
+warning threshold per delivered pass. Use `--max-reviews`, `--max-passes`, and
+`--timeout` when starting the loop; `[loop] timeout` also configures the threshold.
+At the threshold the controller warns once and keeps observing the original agent.
+You can leave it working or use the controls above; verified late results still
+proceed to review. This wall-clock threshold is not a token budget.
+The initial implementation counts as one pass; review counts begin when review runs.
 Use `--json` for the combined structured report. See the
 [loop reference](docs/lifecycle.md#task-loop) for checkpoints, bounds, and recovery.
 
