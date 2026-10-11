@@ -1294,7 +1294,13 @@ class PiAdapter(HerdrAgentAdapter):
             observed = self.confirm_target(execution, observed)
             phase = "prompt submission"
             if execution.delivery_observer:
-                reference = self.delivery_session(workspace, observed["_session_reference"])
+                # Standalone review already supports a Pi path/header appearing
+                # only after submission. Record its prompt digest now; the
+                # review controller binds the verified conversation at completion.
+                # Loop/integration claims still require immutable pre-delivery proof.
+                reference = (observed["_session_reference"]
+                    if execution.purpose == "review" and execution.policy.get("standalone_review")
+                    else self.delivery_session(workspace, observed["_session_reference"]))
                 execution.delivery_observer(reference, str(uuid4()), execution.handoff)
             prompted = self.command("agent", "prompt", workspace.pane_id, execution.handoff)["agent"]
             observed = self.observe_agent(execution, prompted, observed)

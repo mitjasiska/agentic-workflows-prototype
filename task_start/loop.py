@@ -19,13 +19,14 @@ from .config import (check_project_settings_unchanged, load_local, load_projects
 from .contexts import ContextRegistry, HerdrContexts, allocate_launch, pending_launch, context_observer, context_reference
 from .implementation_pass import binding, implementation_pass, implementation_target, initial_execution, parse_implementation
 from .linear import Linear, LinearUnavailable
-from .loop_state import LoopStore, PauseRequested, startup_recovery_blocker
+from .loop_state import LoopStore, PauseRequested, startup_recovery_blocker, unclaimed_existing_boundary
 from .publication_state import PublicationStore, prepare_review_continuation
 from .preparation import check_issue_structure, prepare_task
 from .review import resolve_review_workspace, resolve_reviewer, review_pass, accept_review
 from .review_result import parse_verdict, publication_fingerprint
 from .pass_delivery import PassDelivery, dispose, object_digest, pass_timing
 from .review_state import snapshot
+from .review_handoff_state import ReviewHandoffStore, eligible_review, task_binding, requirements
 from .workspace import Git, Herdr
 from .cleanup import disposed_context_history
 
@@ -63,16 +64,6 @@ def bootstrap(env, options, global_settings, *, ownership=None):
                                      global_settings, env.repo, env.local), ownership=ownership)
     env.endpoint = env.identities.endpoint()
     env.base = Git(env.repo).command("rev-parse", "--verify", f"refs/heads/{env.project.base_branch}^{{commit}}").strip()
-
-
-def task_binding(env):
-    return dict(issue=env.issue.identifier, repository=str(env.repo), worktree=str(env.workspace.path),
-                branch=env.workspace.branch, workspace_id=env.workspace.workspace_id, endpoint=env.endpoint,
-                base_branch=env.project.base_branch)
-
-
-def requirements(env):
-    return fingerprint(dict(title=env.issue.title, description=env.issue.description, project=env.issue.project))
 
 
 def idle_reviewers(env, expected=None):
@@ -425,6 +416,24 @@ class LoopRuntime:
         env = self.env
         return snapshot(env.workspace.path, env.base, env.workspace.branch).as_dict()
 
+    def adopt_review(self, store, state):
+        if state["next_phase"] is None:
+            return  # Terminal consumption is bookkeeping outside drive's error routing.
+        handoffs = ReviewHandoffStore(Path(state["binding"]["worktree"]))
+        handoffs.consume(state)  # Repair only the post-checkpoint consumption gap.
+        value = handoffs.read()
+        if not value or value["consumed"] is not None or state["status"] != "ready":
+            return
+        if state["next_phase"] != "review" or not state["records"] or state["reviewer"] is not None:
+            raise TaskError("Standalone review conflicts with the saved loop boundary; inspect before another handoff")
+        self.prepare(state)
+        candidate = eligible_review(self.env, self.publication, state)
+        if candidate:
+            adopt_review(state, candidate)
+            store.save(state)
+            if state["next_phase"] is not None:
+                handoffs.consume(state)
+
     def revoke_active_acceptance(self, state):
         claim = state["active_pass"]
         if claim and claim["phase"] in {"review", "rereview"}:
@@ -481,13 +490,17 @@ def drive(store, state, runtime, *, on_pass_result=None):
         if state["active_pass"] is not None:
             collect(runtime.recover(state, lambda *_: store.save(state)), recovered=True)
         clean_delivery()
-        if state["status"] in {"interrupted", "escalated"} and state["records"] and state["next_phase"] is not None:
+        if unclaimed_existing_boundary(state) and state["status"] != "ready":
+            state.update(status="ready", reason="Unclaimed existing-context boundary retained; revalidating before delivery")
+            store.save(state)
+        elif state["status"] in {"interrupted", "escalated"} and state["records"] and state["next_phase"] is not None:
             state.update(status="ready", reason="Completed pass retained; revalidating the next boundary")
             store.save(state)
         elif (state["status"] in {"interrupted", "escalated"} and state["records"]
                 and state["records"][-1]["state"] == "clean" and state["next_phase"] is None):
             state.update(status="clean", reason="Implementation and independent review completed cleanly")
             store.save(state)
+        runtime.adopt_review(store, state)
         while state["status"] == "ready":
             _, pause = store.read()
             if pause:
@@ -544,8 +557,22 @@ def drive(store, state, runtime, *, on_pass_result=None):
             state["reason"] = (f"{error}. No initial handoff was claimed; rerun task loop {runtime.identifier} "
                                "to revalidate and reuse the original reservation")
     store.save(state)
+    if state["next_phase"] is None:
+        # A failed/interrupted marker write must leave the checkpointed terminal
+        # verdict and reason intact. A later invocation repairs only this marker.
+        ReviewHandoffStore(Path(state["binding"]["worktree"])).consume(state)
     observe_loop(runtime.env, state)
     return report(*store.read())
+
+
+def adopt_review(state, candidate):
+    """Enter the ordinary router without delivering another review prompt."""
+    value, result = candidate
+    if state["pass_count"] >= state["max_passes"] or state["review_count"] >= state["max_reviews"]:
+        raise TaskError("Saved limits do not permit collecting the standalone review")
+    state.update(reviewer=value["reviewer"], reviewer_options=value["result"]["execution"],
+                 pass_count=state["pass_count"] + 1, review_count=state["review_count"] + 1)
+    route(state, result, value["snapshot"])
 
 
 @ownership_operation
@@ -633,12 +660,15 @@ def _loop(identifier, *, action, agent_kind, model, mode, max_reviews, max_passe
                 return report(*store.read())
             if state["status"] == "aborting":
                 raise TaskError("Abort reconciliation is pending; rerun --abort, never recover the revoked pass")
+            if (state["next_phase"] is None and state["active_pass"] is None and not state.get("delivery")
+                    and ReviewHandoffStore(path).consume(state)):
+                return report(*store.read())
             if state["active_pass"] is not None and not (state.get("delivery") or {}).get("receipt"):
                 raise TaskError("Saved handoff claim has no durable delivery proof; inspect task contexts and retained "
                                 "output. Never replay it or reconstruct historical temporary output. "
                                 "To abandon without discarding work, stop the controller, quit task agents to their "
                                 f"original shells, then run task loop {identifier} --abort outside the checkout")
-            if (state["active_pass"] is not None
+            if (unclaimed_existing_boundary(state) or state["active_pass"] is not None
                     or "delivery" in state and state["records"] and state["status"] != "paused"
                     and (state["next_phase"] is not None or state["records"][-1]["state"] == "clean"
                          or state.get("delivery"))):
@@ -686,7 +716,13 @@ def _loop(identifier, *, action, agent_kind, model, mode, max_reviews, max_passe
     if action == "new":
         existing = control_store(identifier, optional=True)
         if existing:
-            previous, _ = existing[0].read()
+            with PublicationStore(existing[1]).locked():
+                previous, _ = existing[0].read()
+                handoffs = ReviewHandoffStore(existing[1])
+                retained = handoffs.read()
+                if (previous["status"] not in {"aborting", "aborted"} and retained
+                        and retained["consumed"] is None and handoffs.consume(previous)):
+                    return report(*existing[0].read())
             if previous["status"] == "aborted" and set(previous["implementation"]) == {"context_id"}:
                 if from_review:
                     raise TaskError("Initial implementation was never completed; use --new to start implementation")
@@ -696,8 +732,20 @@ def _loop(identifier, *, action, agent_kind, model, mode, max_reviews, max_passe
     global_settings = env.local
     env.local = project_settings(global_settings, env.repo)
     timeout = env.local.loop_timeout if timeout is None else timeout
-    options = resolve_agent_options(env.local.reviewer, AgentOverrides(agent_kind, model, mode),
-                                    section="reviewer", agent_flag="--r-agent")
+    if env.workspace is not None:
+        # Selection is revalidated under the publication lock below. Existing
+        # R1 settings take precedence over defaults, never over conflicting flags.
+        retained = ReviewHandoffStore(env.workspace.path).read()
+        retained_options = (retained["result"]["execution"] if retained and retained["result"]
+                            and retained["consumed"] is None else None)
+    else:
+        retained_options = None
+    options = (AgentOptions(**retained_options) if retained_options else
+               resolve_agent_options(env.local.reviewer, AgentOverrides(agent_kind, model, mode),
+                                     section="reviewer", agent_flag="--r-agent"))
+    if retained_options and any(v is not None and v != retained_options[k] for k, v in
+                               zip(("kind", "model", "mode"), (agent_kind, model, mode))):
+        raise TaskError("Standalone review adoption preserves the original reviewer settings; supplied flags conflict")
     if options.model is None or options.mode is None:
         raise TaskError("Loop reviewer requires explicit model and mode ([reviewer] or --r-model/--r-mode)")
     adapter_for(options).check_available()
@@ -720,10 +768,14 @@ def _loop(identifier, *, action, agent_kind, model, mode, max_reviews, max_passe
             raise TaskError("--i-* options require a from-scratch loop; existing implementation settings are preserved")
         with PublicationStore(env.workspace.path).locked(allow_owned=prepared) as publication:
             store = LoopStore(env.workspace.path)
+            retained = ReviewHandoffStore(env.workspace.path).read() if initial_options is None else None
             if action == "new" and store.path.exists():
                 previous, _ = store.read()
                 if previous["status"] == "aborting":
                     raise TaskError("Abort reconciliation is pending; rerun --abort before --new")
+                if (previous["status"] != "aborted" and retained and retained["consumed"] is None
+                        and ReviewHandoffStore(env.workspace.path).consume(previous)):
+                    return report(*store.read())
                 if previous["status"] == "aborted" and initial_options is None:
                     implementation_target(env, previous["implementation"])
                 if previous["status"] == "aborted" and from_review:
@@ -738,6 +790,15 @@ def _loop(identifier, *, action, agent_kind, model, mode, max_reviews, max_passe
             state = new_state(env, options, max_reviews, max_passes, timeout, from_review=from_review,
                               initial_options=initial_options,
                               reserved_implementation=reservation["implementation"]["context_id"] if reservation else None)
+            if retained and retained["consumed"] is None:
+                candidate = eligible_review(env, publication)
+                if candidate:
+                    options = AgentOptions(**candidate[0]["result"]["execution"])
+                    if any(v is not None and v != getattr(options, k) for k, v in
+                           zip(("kind", "model", "mode"), (agent_kind, model, mode))):
+                        raise TaskError("Standalone reviewer settings changed before adoption; supplied flags conflict")
+                    state.update(version=2, initial_phase="review", next_phase="review")
+                    adopt_review(state, candidate)
             store.create(state, replace=action == "new")
             return drive(store, state, LoopRuntime(identifier, publication, startup_recovery=bool(reservation)),
                          on_pass_result=on_pass_result)

@@ -67,7 +67,9 @@ def parser() -> argparse.ArgumentParser:
     review_command.add_argument("--timeout", type=int, default=1800, metavar="SECONDS")
     loop_command = commands.add_parser("loop", help="Prepare a task and run bounded implementation/review passes",
         description="Prepare an unsliced workspace and launch initial implementation when no context exists, "
-                    "then run independent review and fixes. Existing implementation contexts retain their settings. "
+                    "then run independent review and fixes. Continue a verified implementation completion or "
+                    "adopt an exactly proven completed standalone review; otherwise collect structured completion "
+                    "in the original implementation conversation. Existing contexts retain their settings. "
                     "Configured use needs only task loop ISSUE: [agent] selects initial implementation and "
                     "[reviewer] selects review. Optional --i-* and --r-* flags override those roles. "
                     "Both selections require explicit resolved model and mode. Repeat task loop ISSUE after "
@@ -92,7 +94,7 @@ def parser() -> argparse.ArgumentParser:
                           help="Abandon an unfinished pass after Linux registered-execution checks, preserving checkout and session history; Ctrl+C alone does not abort")
     loop_command.set_defaults(action="run")
     loop_command.add_argument("--from-review", action="store_true",
-                              help="Start a new loop with fresh review of the completed implementation")
+                              help="Explicitly enter review of completed implementation (adopt exact standalone evidence when present)")
     add_agent_options(loop_command, prefix="i-", role="initial implementation")
     add_agent_options(loop_command, prefix="r-", role="reviewer")
     loop_command.add_argument("--max-reviews", type=int, help="Review limit (default 3; maximum 20)")

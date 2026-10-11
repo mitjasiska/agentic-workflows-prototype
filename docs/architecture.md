@@ -65,7 +65,11 @@ ownership. [`pass_delivery.py`](../task_start/pass_delivery.py) retains one priv
 pass result destination and completion seal. Adapters persist a session-bound
 prompt digest before delivery and verify the exact provider completion receipt.
 Restart collection returns to the same loop router and review acceptance writer;
-it never launches or resumes an agent. See [loop controls and recovery](lifecycle.md#task-loop).
+it never launches or resumes an agent.
+[`review_handoff_state.py`](../task_start/review_handoff_state.py) retains one bounded
+private standalone review handoff. Exact provenance permits adoption into the same
+loop checkpoint and router; checkpointing precedes marking the handoff consumed.
+See [loop controls and recovery](lifecycle.md#task-loop).
 Reviewed publishing stages
 live in [`publish.py`](../task_start/publish.py),
 with disposable integration and unpublished commit installation in

@@ -1,4 +1,4 @@
-"""Validated model verdict plus workflow-owned provenance; no durable reports."""
+"""Validated verdict and workflow-owned provenance for review and loop adoption."""
 
 from dataclasses import asdict, dataclass, field
 import hashlib

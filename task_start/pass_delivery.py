@@ -263,6 +263,19 @@ class PassDelivery:
         return object_digest(sorted(c["context_id"] for c in
                                     self.env.registry.list(self.env.issue.identifier, include_retired=True)))
 
+    def check_contexts(self):
+        if self.evidence["contexts_sha256"] == self.contexts_digest():
+            return
+        # Only an independently retained, exact standalone R1 can account for
+        # additions while collecting the original initial/completion I1. This
+        # never changes the saved digest, claim, seal or provider receipt.
+        from .publication_state import PublicationStore
+        from .review_handoff_state import eligible_review
+        if (self.evidence["phase"] not in {"initial_implementation", "implementation"} or
+                eligible_review(self.env, PublicationStore(self.env.workspace.path), self.state,
+                                intervening=True) is None):
+            raise TaskError("Task context set changed since delivery; an intervening execution cannot be adopted")
+
     def invalidate_review(self):
         if self.evidence["review"] is not None and not self.evidence["invalidated"]:
             self.evidence["invalidated"] = True
@@ -313,8 +326,7 @@ class PassDelivery:
     def verify(self, adapter, execution):
         value = self.evidence
         require_current_pass(self.state["binding"]["worktree"], value["run_id"], value["pass_id"])
-        if value["contexts_sha256"] != self.contexts_digest():
-            raise TaskError("Task context set changed since delivery; an intervening execution cannot be adopted")
+        self.check_contexts()
         if value["invalidated"]:
             raise TaskError("Saved review observed Git drift and remains invalidated; inspect before reconciliation")
         path = check_directory(value)
@@ -367,8 +379,7 @@ class PassDelivery:
         value, env = self.evidence, self.env
         require_current_pass(self.state["binding"]["worktree"], value["run_id"], value["pass_id"])
         expected = value["context"]
-        if value["contexts_sha256"] != self.contexts_digest():
-            raise TaskError("Task context set changed since delivery; an intervening execution cannot be adopted")
+        self.check_contexts()
         if expected is None or value["receipt"] is None:
             raise TaskError("Claim predates proven delivery; inspect contexts and retained output; never replay this pass")
         context = env.registry.get(expected["context_id"])

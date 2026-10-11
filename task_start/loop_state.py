@@ -180,6 +180,15 @@ def validate_checkpoint(state):
         raise ValueError("unproven clean boundary")
 
 
+def unclaimed_existing_boundary(state):
+    """A durable-capable existing-context checkpoint has not delivered any prompt."""
+    return (state["version"] in {1, 2} and "delivery" in state and state["delivery"] is None
+            and state["active_pass"] is None and not state["records"]
+            and state["status"] in {"ready", "interrupted", "escalated"}
+            and state["next_phase"] == {1: "implementation", 2: "review"}[state["version"]]
+            and not state["findings"] and not state["seen"])
+
+
 class PauseRequested(Exception):
     """A safe boundary was reached without delivering the next handoff."""
 
@@ -333,7 +342,8 @@ class LoopStore:
             # Recovery retains escalated state during preflight. Record pause
             # intent there without making the boundary resumable before proof.
             if (state["status"] in {"ready", "running", "paused"} or state.get("delivery")
-                    and state["active_pass"] is not None or startup_recovery_blocker(state) is None):
+                    and state["active_pass"] is not None or startup_recovery_blocker(state) is None
+                    or unclaimed_existing_boundary(state)):
                 db.execute("UPDATE checkpoint SET pause=1 WHERE id=1")
         return self.read()
 

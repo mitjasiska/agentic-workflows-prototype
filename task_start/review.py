@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import tempfile
 import time
+from types import SimpleNamespace
 from uuid import uuid4
 
 from . import TaskError
@@ -242,6 +243,13 @@ def review_pass(issue, project, repo, registry, identities, workspace, anchor, b
             frozen = dict(saved["rebase"]["publication"])
             frozen_fingerprint = publication_fingerprint(frozen)
     pass_id, pass_kind = str(uuid4()), "resumed" if resume is not None else "fresh"
+    standalone = None
+    if delivery is None and loop_feedback is None:
+        from .review_handoff_state import ReviewHandoffStore
+        handoff_env = SimpleNamespace(issue=issue, project=project, repo=repo, registry=registry,
+                                     workspace=workspace, endpoint=endpoint)
+        standalone = ReviewHandoffStore(workspace.path)
+        handoff_record = standalone.begin(handoff_env, before.as_dict())
     context_id, verdict, invalidated, post = resume, None, False, None
     state, summary, claimed = "failed", "Reviewer did not complete", False
     fresh_launch_failed = False
@@ -262,6 +270,8 @@ def review_pass(issue, project, repo, registry, identities, workspace, anchor, b
 
     policy = codex_repository_policy(local.codex_repository_profiles, project.repo_name) if options.kind == "codex" else {}
     policy = dict(policy, read_only=True)
+    if standalone:
+        policy["standalone_review"] = True
     with observe_run() as metric:
         try:
             with (nullcontext(None) if delivery else tempfile.TemporaryDirectory(prefix="task-review-")) as directory:
@@ -282,7 +292,7 @@ def review_pass(issue, project, repo, registry, identities, workspace, anchor, b
                                  run_id=pass_id, context_id=allocated, **(metrics_context or {}))
                     return review_handoff(issue, repo, workspace, project.base_branch, before,
                                           context_id, pass_kind, options, pass_id, output, frozen_publication=frozen,
-                                          loop_feedback=loop_feedback, validation=local.review_validation,
+                                          loop_feedback=loop_feedback, routable=standalone is not None, validation=local.review_validation,
                                           scope=local.implementation_scope) + (delivery.contract() if delivery else "")
 
                 if before_handoff:
@@ -303,6 +313,12 @@ def review_pass(issue, project, repo, registry, identities, workspace, anchor, b
                                            purpose="review", policy=policy)
                 if delivery:
                     execution = delivery.attach(execution, add_contract=False)
+                elif standalone:
+                    # Fresh allocation happens inside launch_registered. Resolve
+                    # its selector when the adapter claims the actual prompt.
+                    def claim_standalone(reference, message_id, prompt):
+                        standalone.claim(handoff_env, handoff_record, options, context_id, reference, message_id, prompt)
+                    execution = replace(execution, delivery_observer=claim_standalone)
                 if context:
                     identities.label(pane, context_id)
                     execution = replace(execution, runtime_observer=context_observer(registry, context_id))
@@ -428,9 +444,12 @@ def review_pass(issue, project, repo, registry, identities, workspace, anchor, b
                           context_reference(registry.get(context_id)), verdict, frozen)
         if verdict is not None or state != "failed":
             metric.outcome(state, findings=verdict["findings"] if verdict else None)
-        return ReviewResult(state, summary, context_id, pass_kind, asdict(options), before.as_dict(), pass_id,
+        result = ReviewResult(state, summary, context_id, pass_kind, asdict(options), before.as_dict(), pass_id,
                             verdict["findings"] if verdict else [], verdict["checks"] if verdict else [],
                             invalidated, post.fingerprint if post else None)
+        if standalone:
+            standalone.finish(handoff_env, handoff_record, result, store)
+        return result
 
 
 def accept_review(store, saved, issue, repo, workspace, endpoint, base_branch,
