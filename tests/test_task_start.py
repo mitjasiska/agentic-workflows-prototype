@@ -17,6 +17,8 @@ from task_start.agent import LaunchResult
 from task_start.config import (AgentConfig, IssueStructureConfig, LocalConfig, Project,
                               load_local, load_projects, repository_path, resolve_project)
 from task_start.linear import Issue, Linear
+from task_start.contexts import ContextRegistry
+from task_start.metrics import MetricsStore
 from task_start.preparation import check_issue_structure
 from task_start.workspace import Git, Herdr, Workspace, branch_name, run
 
@@ -495,6 +497,17 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(len(output.splitlines()), 7)
         self.assertIn("Linear: In Progress", output)
         self.assertNotIn("test-placeholder", output)
+        metric, = MetricsStore(ContextRegistry().path).read()
+        self.assertEqual((metric["role"], metric["status"]), ("implementation", "dispatched"))
+        self.assertEqual((metric["agent"], metric["model"], metric["mode"]), ("codex", "gpt-6-astra", "high"))
+        self.assertIsNone(metric["finished_at"])
+        self.assertIsNone(metric["wall_clock_seconds"])
+
+    def test_metrics_failure_does_not_block_interactive_dispatch(self):
+        with patch("task_start.metrics.MetricsStore.write", side_effect=OSError("full disk")):
+            output = cli.start("DEV-7")
+        self.agent.launch.assert_called_once()
+        self.assertIn("Codex working", output)
 
     def test_required_missing_block_refuses_before_any_workflow_mutation(self):
         self.enterContext(patch('task_start.cli.load_local', return_value=replace(
@@ -629,6 +642,7 @@ class OrchestrationTests(unittest.TestCase):
         adapter.assert_not_called()
         launch.assert_not_called()
         self.assertIn("skipped (--no-agent)", output)
+        self.assertFalse(MetricsStore(ContextRegistry().path).directory.exists())
 
     def test_herdr_failure_does_not_update_linear(self):
         self.herdr.prepare.side_effect = TaskError("Herdr failed")

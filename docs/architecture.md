@@ -8,6 +8,7 @@ controller. Its first public release is a **Developer Preview**.
 - [Execution contract and responsibilities](#agent-execution-architecture)
 - [Handoff transport](#handoff-transport)
 - [Context identity and registry](#workflow-context-identities)
+- [Experimental local run metrics](#experimental-local-run-metrics)
 - [Validation and historical live checks](#validation)
 
 ## Agent execution architecture
@@ -313,6 +314,57 @@ Pending disposal gates
 workspace resolution and preparation; only the explicit cleanup command may
 continue its journaled removals. See
 [destructive semantics and recovery](lifecycle.md#forced-local-execution-disposal).
+
+## Experimental local run metrics
+
+[`metrics.py`](../task_start/metrics.py) writes experimental observations to
+`~/.agentic-workflows-lite/metrics/runs.json`, beside the context registry.
+It is a versioned JSON object with `version: 1` and a `runs` array; each record
+also carries `version: 1`. Copy this file for export or future migration. It is
+local only, independent of run reports, artifact stores, and remote services.
+
+The writer retains up to 256 runs in insertion order, updating retained IDs in
+place. A pruned in-flight run can reappear when its final observation arrives.
+Records are limited to 4 KiB, the JSON snapshot to 2 MiB, and one bounded scratch
+snapshot may remain after a crash. There is no archive. The directory is created
+with mode `700`, files with `600`; non-private, foreign-owned, linked, corrupt,
+oversized, or unsupported-version files are skipped. Nonblocking locking and
+atomic replacement protect concurrent writes. Contention or storage failures can
+drop observations. Removing only the `metrics` directory while controllers are
+stopped resets the experiment without changing workflow state.
+
+Fields describe workflow observations, not estimates:
+
+| Fields | Meaning |
+| --- | --- |
+| `run_id`, `task_id`, `context_id` | Existing pass ID (a new UUID for interactive dispatch), Linear identifier, and context identity when known. |
+| `role` | `implementation`, `fix`, `review`, `re-review`, or `integration`; the schema also permits `research` if a future execution path provides it. |
+| `agent`, `model`, `mode` | Resolved workflow selections. Null means unknown/default; runtime model switching is not inferred. |
+| `started_at`, `finished_at`, `wall_clock_seconds` | UTC controller observation interval around launch/resume and result collection. Duration is exactly finish minus start, including startup, waiting, human setup, and validation in that interval. Clock adjustments can make it negative. It is not active model time. |
+| `status` | `running`, `dispatched`, `completed`, `failed`, `interrupted`, `blocked`, or `timed_out`. Integration `human_decision` maps to `blocked`. |
+| `loop_id`, `review_round`, `previous_run_id`, `implementation_context_id` | Known loop/pass/context relationships. Review rounds are one-based; a fix refers to the round supplying its findings. Integration links to its source review pass. Unknown relationships remain null. |
+| `review_outcome`, `findings_count` | High-level validated review verdict and count when available, without finding text. |
+| `loop_status` | Last observed loop routing state for this pass, including escalation or interruption. |
+| `result_observed_at` | When recovery collected a verified result for the original pass, if applicable. This is a late observation timestamp, not an execution finish. |
+| `runtime_versions` | Python version already available in the controller; external CLI versions are not probed. |
+
+Interactive `task start` records dispatch with null finish/duration because the
+controller does not observe agent completion. `--no-agent` emits nothing. Loop
+implementation/fix passes, fresh/resumed reviews, and integration agent passes
+record their observed result. Integration completion describes the agent pass,
+not installation or publication. On interruption or timeout, the interval ends
+when the controller stops observing; the agent may still be running. A killed
+controller can leave `running` with no finish. After verifying and collecting the
+original result, recovery updates its retained metrics status and available review
+outcome/count, with a separate `result_observed_at`. It preserves the original
+observation interval, including an unknown finish/duration, and does not recreate
+missing metrics records. Manual turns outside these controllers are not captured.
+
+Token usage, subscription quota, active-model time, and monetary cost are absent.
+No issue descriptions, prompts, transcripts, checks prose, findings text,
+credentials, or semantic run reports are recorded. Missing/corrupt metrics never
+authorize or block execution, review acceptance, publication, recovery, or cleanup;
+only the existing workflow evidence governs those actions.
 
 ## Validation
 

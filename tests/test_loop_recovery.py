@@ -22,6 +22,7 @@ from task_start import TaskError, cli
 from task_start.agent import Codex, AgentOptions
 from task_start.loop import loop, LoopRuntime, environment
 from task_start.loop_state import LoopStore
+from task_start.metrics import MetricsStore, RunMetrics
 from task_start.publication_state import PublicationStore
 from task_start.pass_delivery import PassDelivery
 from task_start.review import review
@@ -91,6 +92,109 @@ class RecoveryTests(unittest.TestCase):
                     case.assertEqual(loop("DEV-7").data, result.data)
                 finally:
                     case.doCleanups()
+
+    def check_recovered_metrics(self, phase, outcome, *, killed=False):
+        metrics = MetricsStore(self.registry.path)
+        finish = RunMetrics.finish
+        role = {"implementation": "implementation", "fixes": "fix", "review": "review", "rereview": "re-review"}[phase]
+
+        def observe_finish(metric, error=None):
+            # Model a killed controller's missing final observation for this pass.
+            if not (killed and metric.record and metric.record["role"] == role):
+                finish(metric, error)
+
+        if phase in {"implementation", "fixes"}:
+            self.impl_overrides = dict(state=outcome)
+        elif outcome == "findings":
+            self.review_results = [loops.findings(loops.finding())]
+        else:
+            self.review_results = [dict(state=outcome)]
+        with patch.object(RunMetrics, "finish", observe_finish):
+            before = self.interrupt(phase)
+        pass_id = before["active_pass"]["pass_id"]
+        original = next(r for r in metrics.read() if r["run_id"] == pass_id)
+        self.assertEqual(original["status"], "running" if killed else "interrupted")
+        self.assertEqual(original["finished_at"] is None, killed)
+        prompts = (len(self.impl_prompts), len(self.prompts))
+        self.store.pause()  # Collect only the retained pass; do not deliver a next pass.
+        observed_at = "2050-01-02T03:04:05+00:00"
+        with patch("task_start.metrics.timestamp", return_value=observed_at):
+            result = loop("DEV-7")
+        self.assertEqual(result.state, {"completed": "paused", "findings": "paused", "clean": "clean",
+                                       "blocked": "escalated", "failed": "escalated"}[outcome], result.render())
+        self.assertEqual((len(self.impl_prompts), len(self.prompts)), prompts)
+        rows = [r for r in metrics.read() if r["run_id"] == pass_id]
+        self.assertEqual(len(rows), 1)
+        recovered, = rows
+        for field in ("run_id", "task_id", "context_id", "loop_id", "role", "model", "agent", "mode",
+                      "previous_run_id", "review_round", "implementation_context_id",
+                      "started_at", "finished_at", "wall_clock_seconds"):
+            self.assertEqual(recovered[field], original[field], field)
+        self.assertEqual(recovered["result_observed_at"], observed_at)
+        self.assertEqual(recovered["status"], "completed" if outcome in {"clean", "findings"} else outcome)
+        self.assertEqual(recovered["loop_status"], result.state)
+        if phase in {"review", "rereview"}:
+            self.assertEqual(recovered["findings_count"], 1 if outcome == "findings" else 0)
+            self.assertEqual(recovered.get("review_outcome"), outcome if outcome in {"clean", "findings"} else None)
+        else:
+            self.assertNotIn("findings_count", recovered)
+            self.assertNotIn("review_outcome", recovered)
+        after = self.store.read()[0]
+        self.assertEqual(sum(r["pass_id"] == pass_id for r in after["records"]), 1)
+        self.assertIsNone(after["active_pass"])
+        self.assertIsNone(after["delivery"])
+        # A later status read cannot replace the late observation timestamp.
+        self.assertEqual(loop("DEV-7", action="status").state, result.state)
+        self.assertEqual(next(r for r in metrics.read() if r["run_id"] == pass_id), recovered)
+
+    def test_recovered_implementation_metrics_preserve_interval_and_verified_result(self):
+        for phase, outcome, killed in (("implementation", "completed", False), ("implementation", "blocked", True),
+                                      ("implementation", "failed", False), ("fixes", "completed", True)):
+            with self.subTest(phase=phase, outcome=outcome, killed=killed):
+                case = RecoveryTests(); case.setUp()
+                try:
+                    case.check_recovered_metrics(phase, outcome, killed=killed)
+                finally:
+                    case.doCleanups()
+
+    def test_recovered_review_metrics_preserve_interval_and_verified_verdict(self):
+        for phase, outcome, killed in (("review", "clean", False), ("review", "findings", True),
+                                      ("review", "blocked", False), ("review", "failed", True),
+                                      ("rereview", "clean", True)):
+            with self.subTest(phase=phase, outcome=outcome, killed=killed):
+                case = RecoveryTests(); case.setUp()
+                try:
+                    case.check_recovered_metrics(phase, outcome, killed=killed)
+                finally:
+                    case.doCleanups()
+
+    def test_rejected_recovery_cannot_upgrade_metrics_or_accept_review(self):
+        before = self.interrupt("review")
+        metrics = MetricsStore(self.registry.path)
+        original = metrics.read()[-1]
+        self.assertEqual(original["status"], "interrupted")
+        with patch.object(self.adapter, "observe_delivery", side_effect=TaskError("Unverified completion")):
+            result = loop("DEV-7")
+        self.assertEqual(result.state, "escalated", result.render())
+        self.assertEqual(metrics.read()[-1], dict(original, loop_status="escalated"))
+        self.assertEqual(self.store.read()[0]["active_pass"], before["active_pass"])
+        self.assertEqual((len(self.impl_prompts), len(self.prompts)), (1, 1))
+        self.assertIsNone(PublicationStore(self.path).read()["acceptance"])
+
+    def test_invalid_metrics_do_not_block_verified_recovery_or_authorize_replay(self):
+        before = self.interrupt("review")
+        metrics = MetricsStore(self.registry.path)
+        path = metrics.directory / "runs.json"
+        value = json.loads(path.read_text())
+        value["runs"][-1]["findings_count"] = -1
+        raw = json.dumps(value)
+        path.write_text(raw)
+        result = loop("DEV-7")
+        self.assertEqual(result.state, "clean", result.render())
+        self.assertIsNone(metrics.read())
+        self.assertEqual(path.read_text(), raw)
+        self.assertEqual((len(self.impl_prompts), len(self.prompts)), (1, 1))
+        self.assertEqual(PublicationStore(self.path).read()["acceptance"]["pass_id"], before["active_pass"]["pass_id"])
 
     def test_lost_or_conflicting_evidence_never_replays(self):
         for change in ("missing", "truncated", "forged", "wrong_pass", "session", "moved", "git", "issue", "base", "slice", "receipt", "symlink"):

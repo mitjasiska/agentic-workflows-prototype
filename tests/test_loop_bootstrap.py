@@ -21,6 +21,7 @@ from task_start.handoff import implementation_handoff
 from task_start.integration_process import verify_shell_process
 from task_start.loop import loop, LoopRuntime
 from task_start.loop_state import LoopStore
+from task_start.metrics import MetricsStore
 from task_start.linear import Linear
 from task_start.workspace import Git, Herdr
 from test_loop import ImplementationAdapter, finding, findings
@@ -948,6 +949,10 @@ class BootstrapLoopTests(unittest.TestCase):
         self.assertEqual([r['phase'] for r in state['records']], ['initial_implementation', 'review'])
         self.assertEqual(self.command(self.path, 'rev-parse', 'HEAD'), self.before)
         self.assertNotIn(fixture.ISSUE.description, self.store.path.read_bytes().decode(errors='ignore'))
+        metrics = MetricsStore(self.registry.path).read()
+        self.assertEqual([r['role'] for r in metrics], ['implementation', 'review'])
+        self.assertEqual([r['run_id'] for r in metrics], [r['pass_id'] for r in state['records']])
+        self.assertEqual((metrics[0]['agent'], metrics[0]['model'], metrics[0]['mode']), ('pi', 'implementer', 'low'))
 
     def assert_structure_handoff(self, description, *, warning):
         issue = replace(fixture.ISSUE, description=description)

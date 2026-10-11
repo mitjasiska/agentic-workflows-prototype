@@ -246,6 +246,7 @@ class LayeredConfigTests(unittest.TestCase):
 
     def test_start_resolves_permanent_layers_and_cli_before_launch(self):
         from test_task_start import ISSUE
+        from task_start.metrics import MetricsStore
         from task_start.workspace import Workspace
         from types import SimpleNamespace
         self.enterContext(patch('task_start.contexts.registry_path', return_value=self.root / 'contexts.sqlite3'))
@@ -264,6 +265,9 @@ class LayeredConfigTests(unittest.TestCase):
             self.assertEqual(execution.repository, self.repo)
             self.assertEqual(execution.policy, {'codex_profile': 'trusted'})
             self.assertNotIn('placeholder', execution.handoff)
+            metric, = MetricsStore(self.root / 'contexts.sqlite3').read()
+            self.assertEqual(metric['status'], 'dispatched')
+            self.assertIsNone(metric['context_id'])
 
 
 def install_lifecycle_layers(case):

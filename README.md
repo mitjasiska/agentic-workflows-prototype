@@ -31,6 +31,9 @@ applying fixes. The optional loop routes implementation defects back for fixes
 and resumes the same reviewer. You own product and architecture decisions,
 publication, merging, and marking the Linear issue complete.
 
+Agent executions automatically emit bounded, experimental [local run metrics](docs/architecture.md#experimental-local-run-metrics)
+for inspecting selected settings, observed durations, and outcomes.
+
 ## Setup
 
 You need Python 3.12, Git, and Herdr on `PATH`, with a running Herdr session.

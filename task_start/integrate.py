@@ -10,6 +10,7 @@ import time
 from uuid import uuid4
 
 from . import TaskError
+from .metrics import observe_run
 from .ownership import ownership_operation
 from . import publish as publication
 from .agent import AgentExecution, AgentOptions, AgentOverrides, adapter_for, codex_repository_policy, resolve_agent_options
@@ -105,7 +106,7 @@ def history_identity(path):
 
 
 def agent_pass(issue, project, repo, workspace, anchor, local, options, adapter, registry, identities,
-               record, state_store, verify_source, timeout):
+               record, state_store, verify_source, timeout, *, previous_run_id=None):
     path = Path(record["checkout"])
     pane = identities.split(anchor, path)
     isolated = replace(workspace, path=path, branch="integration", pane_id=pane["pane_id"], tab_id=pane["tab_id"])
@@ -158,40 +159,47 @@ def agent_pass(issue, project, repo, workspace, anchor, local, options, adapter,
 
     execution = replace(execution, runtime_observer=observe)
     verify_source()
-    launch_allocated(adapter, execution, context_id, registry, identities, persist_observer=persist)
-    def poll_observer(values):
-        persist(values)
-        observe()
-    execution = replace(execution, runtime_observer=poll_observer)
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        verify_source()
-        observe()
-        current, notes = reconcile(registry.get(context_id), identities.snapshot())
-        if (current is None or current.get("agent") != options.kind
-                or Path(current.get("cwd", "")).resolve() != path
-                or current["terminal_id"] != pane["terminal_id"]
-                or any(n in {"agent mismatch", "session mismatch", "session identity invalid"} for n in notes)):
-            raise TaskError("Integration runtime identity changed; inspect it before recovery")
-        status = adapter.status(execution, pane["terminal_id"], expected["session"] if expected else None)
-        observe()
-        if status == "blocked":
-            raise TaskError("Integration agent requires a human decision; inspect its context")
-        if status in {"idle", "done"} and output.exists():
-            if expected is None:
-                raise TaskError("Integration has no verified immutable conversation identity")
-            verified = adapter.verify_session(isolated, expected["session"])
-            persist(dict(herdr_session=json.dumps(verified), resumability="yes"))
+    with observe_run() as metric:
+        metric.start(registry, issue, options, "integration", run_id=record["pass_id"], context_id=context_id,
+                     previous_run_id=previous_run_id)
+        launch_allocated(adapter, execution, context_id, registry, identities, persist_observer=persist)
+        def poll_observer(values):
+            persist(values)
             observe()
-            if (output.parent.resolve() != output.parent or output.is_symlink()
-                    or not output.is_file() or output.stat().st_size > 1024 * 1024):
-                raise TaskError("Invalid integration result file")
-            result = parse_result(output.read_text(encoding="utf-8"), record)
-            if time.monotonic() >= deadline:
-                raise TaskError("Timed out waiting for verified integration completion")
-            return result
-        time.sleep(0.25)
-    raise TaskError("Timed out waiting for integration; inspect its retained context. No prompt replay is safe")
+        execution = replace(execution, runtime_observer=poll_observer)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            verify_source()
+            observe()
+            current, notes = reconcile(registry.get(context_id), identities.snapshot())
+            if (current is None or current.get("agent") != options.kind
+                    or Path(current.get("cwd", "")).resolve() != path
+                    or current["terminal_id"] != pane["terminal_id"]
+                    or any(n in {"agent mismatch", "session mismatch", "session identity invalid"} for n in notes)):
+                raise TaskError("Integration runtime identity changed; inspect it before recovery")
+            status = adapter.status(execution, pane["terminal_id"], expected["session"] if expected else None)
+            observe()
+            if status == "blocked":
+                metric.outcome("blocked")
+                raise TaskError("Integration agent requires a human decision; inspect its context")
+            if status in {"idle", "done"} and output.exists():
+                if expected is None:
+                    raise TaskError("Integration has no verified immutable conversation identity")
+                verified = adapter.verify_session(isolated, expected["session"])
+                persist(dict(herdr_session=json.dumps(verified), resumability="yes"))
+                observe()
+                if (output.parent.resolve() != output.parent or output.is_symlink()
+                        or not output.is_file() or output.stat().st_size > 1024 * 1024):
+                    raise TaskError("Invalid integration result file")
+                result = parse_result(output.read_text(encoding="utf-8"), record)
+                if time.monotonic() >= deadline:
+                    metric.outcome("timed_out")
+                    raise TaskError("Timed out waiting for verified integration completion")
+                metric.outcome(result["state"])
+                return result
+            time.sleep(0.25)
+        metric.outcome("timed_out")
+        raise TaskError("Timed out waiting for integration; inspect its retained context. No prompt replay is safe")
 
 
 def prove_result(git, record, intent):
@@ -475,7 +483,7 @@ def integrate(identifier, *, agent_kind=None, model=None, mode=None, timeout=180
             record["output"] = str(completion_path(record))
             state_store.write(record)
             result = agent_pass(issue, project, repo, workspace, anchor, local, options, adapter, registry, identities,
-                                record, state_store, verify_source, timeout)
+                                record, state_store, verify_source, timeout, previous_run_id=accepted["pass_id"])
             record["completion"] = result
             if result["state"] != "completed":
                 record["state"] = "stopped"

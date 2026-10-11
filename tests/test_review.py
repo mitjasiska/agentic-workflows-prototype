@@ -18,6 +18,7 @@ from task_start.handoff import review_handoff
 from task_start.review import finalize_reviewer, review
 from task_start.review_result import parse_verdict
 from task_start.review_state import snapshot
+from task_start.metrics import MetricsStore
 from task_start.sessions import SessionInvalid
 from task_start.workspace import Git, Herdr, Workspace
 from test_task_start import ISSUE
@@ -146,6 +147,42 @@ class ReviewTests(unittest.TestCase):
         self.linear.start.assert_not_called()
         self.assertEqual(len(self.registry.list()), 3)
         self.assertFalse(Path(self.adapter.output).exists())
+        metrics = MetricsStore(self.registry.path).read()
+        self.assertEqual([r["run_id"] for r in metrics], [first.pass_id, second.pass_id, resumed.pass_id])
+        self.assertEqual([r["role"] for r in metrics], ["review", "review", "re-review"])
+        self.assertEqual([r["context_id"] for r in metrics], [first.context_id, second.context_id, first.context_id])
+        self.assertTrue(all(r["loop_id"] is None and r["review_round"] is None for r in metrics))
+        self.assertTrue(all(r["status"] == "completed" and r["findings_count"] == 0 for r in metrics))
+        self.assertTrue(all(r["implementation_context_id"] == self.implementation for r in metrics))
+
+    def test_standalone_metrics_keep_verified_implementation_identity_on_fresh_and_resume(self):
+        # Retired I1 and a misleading pane label must not replace the active I2 identity.
+        self.registry.update(self.implementation, state="retired")
+        self.implementation = self.registry.allocate("DEV-7", "implementation", agent="pi", model="implementation",
+            mode="low", repository=str(self.repo), worktree=str(self.path), endpoint="/server.sock",
+            workspace_id="w1", tab_id="t1", pane_id="p1", terminal_id="term1")
+        self.registry.update(self.implementation, state="active", session_id="/implementation.jsonl", session_kind="path")
+        self.assertEqual(self.implementation, "DEV-7-I2")
+        self.assertEqual(self.panes[0]["label"], "DEV-7-I1")
+        fresh = review("DEV-7")
+        resumed = review("DEV-7", resume=fresh.context_id)
+        self.assertEqual((fresh.state, resumed.state), ("clean", "clean"))
+        metrics = MetricsStore(self.registry.path).read()
+        self.assertEqual([r["run_id"] for r in metrics], [fresh.pass_id, resumed.pass_id])
+        self.assertEqual([r["role"] for r in metrics], ["review", "re-review"])
+        self.assertEqual([r["implementation_context_id"] for r in metrics], ["DEV-7-I2", "DEV-7-I2"])
+        self.assertEqual([r["context_id"] for r in metrics], [fresh.context_id, fresh.context_id])
+        self.assertTrue(all(r["loop_id"] is None and r["previous_run_id"] is None for r in metrics))
+
+    def test_metrics_record_finalization_failure_after_blocked_runtime(self):
+        self.status = "blocked"
+        with patch("task_start.review.finalize_reviewer", side_effect=TaskError("identity changed")):
+            result = review("DEV-7")
+        self.assertEqual(result.state, "failed")
+        metric, = MetricsStore(self.registry.path).read()
+        self.assertEqual(metric["status"], "failed")
+        self.assertNotIn("review_outcome", metric)
+        self.assertNotIn("findings_count", metric)
 
     def codex_transport(self):
         self.enterContext(patch("task_start.review.adapter_for", side_effect=Codex))

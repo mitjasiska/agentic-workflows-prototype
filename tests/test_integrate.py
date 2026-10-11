@@ -20,6 +20,7 @@ from task_start.integrate import integrate
 from task_start.integration_state import IntegrationStore
 from task_start.loop import loop
 from task_start.loop_state import LoopStore
+from task_start.metrics import MetricsStore
 from task_start.publish import publish
 from task_start.review import review
 from task_start.review_state import snapshot
@@ -101,6 +102,11 @@ class IntegrationTests(unittest.TestCase):
         accepted = self.store.read()["acceptance"]
         base = self.advance_remote(conflict=True)
         self.assertIn("independent task review", integrate("DEV-7"))
+        metric = MetricsStore(self.registry.path).read()[-1]
+        self.assertEqual((metric["role"], metric["status"], metric["context_id"]),
+                         ("integration", "completed", "DEV-7-G1"))
+        self.assertEqual(metric["run_id"], self.integration_store.read()["pass_id"])
+        self.assertEqual(metric["previous_run_id"], accepted["pass_id"])
         self.assertIsNone(self.store.read()["acceptance"])
         self.assertEqual(self.command(self.path, "rev-parse", "HEAD^"), base)
         self.assertEqual(self.command(self.path, "status", "--porcelain"), "")
@@ -200,6 +206,7 @@ class IntegrationTests(unittest.TestCase):
             with self.assertRaisesRegex(TaskError, "[Ii]ntegration.*inspect|inspect.*[Ii]ntegration"):
                 action("DEV-7")
         self.assertEqual(self.integrator.launches, 1)
+        self.assertEqual(MetricsStore(self.registry.path).read()[-1]["status"], "blocked")
 
     def test_interrupted_delivery_retains_checkout_and_claim(self):
         self.prepare_integration()
@@ -346,6 +353,7 @@ class IntegrationTests(unittest.TestCase):
         self.failed_resolution(state="failed", message="reported failed")
         self.assertTrue(self.command(self.integrator.execution.workspace.path, "ls-files", "--unmerged"))
         self.assertTrue(Path(self.integration_store.read()["output"]).is_file())
+        self.assertEqual(MetricsStore(self.registry.path).read()[-1]["status"], "failed")
 
     def test_blocked_completion_preserves_source(self):
         self.failed_resolution(state="blocked", message="reported blocked")
@@ -355,6 +363,7 @@ class IntegrationTests(unittest.TestCase):
 
     def test_timeout_does_not_accept_early_result_or_delete_checkout(self):
         self.failed_resolution(status="working", message="Timed out")
+        self.assertEqual(MetricsStore(self.registry.path).read()[-1]["status"], "timed_out")
 
     def test_malformed_result_preserves_source(self):
         self.failed_resolution(mutation=lambda execution, output: output.write_text("{}"), message="Malformed")

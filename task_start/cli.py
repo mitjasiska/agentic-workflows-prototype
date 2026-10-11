@@ -6,6 +6,7 @@ import signal
 import sys
 
 from . import TaskError
+from .metrics import observe_run
 from .ownership import ownership_operation
 from .agent import (AgentExecution, AgentOverrides, adapter_for,
                     codex_repository_policy, resolve_agent_options)
@@ -165,7 +166,11 @@ def start(identifier: str, *, no_agent: bool = False, slice: str | None = None,
         execution = AgentExecution(issue, repo, workspace, options,
                                    implementation_handoff(issue, workspace, assessment=local.task_assessment,
                                                           scope=local.implementation_scope), policy=policy)
-        status = launch_registered(agent, execution).summary
+        with observe_run() as metric:
+            metric.start(ContextRegistry(), issue, options, "implementation")
+            launched = launch_registered(agent, execution)
+            metric.outcome("dispatched", context_id=getattr(launched, "context_id", None))
+            status = launched.summary
     else:
         status = "skipped (--no-agent)"
     return (f"{issue.identifier}  {issue.title}\nRepo:   {repo}\nBranch: {workspace.branch}\n"
