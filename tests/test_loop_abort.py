@@ -1,6 +1,7 @@
 """Non-destructive aborts with real Git/checkpoints and disposable processes."""
 
 import copy
+from contextlib import contextmanager
 import fcntl
 import io
 import json
@@ -10,6 +11,7 @@ from pathlib import Path
 import pty
 import select
 import signal
+import shutil
 import subprocess
 import sys
 import termios
@@ -374,7 +376,11 @@ class AbortTests(unittest.TestCase):
                 self.assertEqual(cli.main(["loop", "DEV-7", "--abort", *extra]), 1)
         with patch("sys.stdout", io.StringIO()) as output, self.assertRaises(SystemExit):
             cli.parser().parse_args(["loop", "--help"])
-        self.assertIn("Ctrl+C first", output.getvalue())
+        help_text = " ".join(output.getvalue().split())
+        self.assertIn("Ctrl+C first", help_text)
+        self.assertIn("Herdr's Linux host", help_text)
+        self.assertIn("not machine-wide checkout non-use", help_text)
+        self.assertIn("Stop manually detached or external helpers", help_text)
         with patch("task_start.cli.loop", side_effect=KeyboardInterrupt), patch("sys.stderr", io.StringIO()) as error:
             self.assertEqual(cli.main(["loop", "DEV-7", "--abort"]), 130)
         self.assertIn("--abort to finish reconciliation", error.getvalue())
@@ -385,235 +391,179 @@ class LoopProcessTests(unittest.TestCase):
     process = cleanup.DisposalProcessTests.process
     shells = cleanup.DisposalProcessTests.shells
 
-    def test_ancestry_detached_checkout_users_unreadable_evidence_and_pid_reuse(self):
-        self.process(123, 1, self.checkout)
-        self.assertEqual(stopped_loop_execution(self.checkout, self.shells(123), proc=self.proc), {"123": 7})
-        for kind in ("child", "cwd", "argv", "fd", "missing", "replaced"):
-            with self.subTest(kind=kind):
-                root = self.proc / "124"
-                self.process(124, 123 if kind == "child" else 1,
-                             self.checkout if kind == "cwd" else self.proc,
-                             argv=f"worker\0{self.checkout}\0" if kind == "argv" else "worker\0")
-                if kind == "fd":
-                    (root / "fd" / "3").symlink_to(self.checkout / "work.txt")
-                if kind == "missing":
-                    (root / "cwd").unlink()
-                if kind == "replaced":
-                    (self.proc / "123" / "exe").unlink()
-                    (self.proc / "123" / "exe").symlink_to(sys.executable)
-                with self.assertRaises(TaskError):
-                    stopped_loop_execution(self.checkout, self.shells(123), proc=self.proc)
-                import shutil
-                shutil.rmtree(root)
-
-    def nonterminal_process(self, pid, *, started=6, parent=1):
-        self.process(pid, parent, self.proc, argv="service\0", started=started)
+    def stat_fields(self, pid, **changes):
         stat = self.proc / str(pid) / "stat"
         fields = stat.read_text().rpartition(") ")[2].split()
-        fields[4] = "0"
-        stat.write_text(f"{pid} (service) " + " ".join(fields))
+        for index, value in changes.items():
+            fields[int(index)] = str(value)
+        stat.write_text(f"{pid} (fixture) " + " ".join(fields))
 
-    def deny_private_references(self, pids):
-        original_link, original_iter = os.readlink, Path.iterdir
+    def deny_private_references(self, *pids, denied=None):
+        """Model denied references and record any attempt to inspect them."""
+        original_link, original_iter, original_bytes = os.readlink, Path.iterdir, Path.read_bytes
         entries = {self.proc / str(pid) for pid in pids}
+        reads = []
+        def deny(path):
+            if Path(path).parent in entries:
+                reads.append(str(path))
+                if denied is None or Path(path).name in denied:
+                    raise PermissionError("private process references")
         def readlink(path, *args, **kwargs):
-            if Path(path).parent in entries and Path(path).name == "cwd":
-                raise PermissionError("private process cwd")
+            deny(path)
             return original_link(path, *args, **kwargs)
         def iterdir(path):
-            if path.parent in entries and path.name == "fd":
-                raise PermissionError("private process descriptors")
+            deny(path)
             return original_iter(path)
+        def read_bytes(path):
+            deny(path)
+            return original_bytes(path)
         self.enterContext(patch("os.readlink", side_effect=readlink))
         self.enterContext(patch.object(Path, "iterdir", iterdir))
+        self.enterContext(patch.object(Path, "read_bytes", read_bytes))
+        return reads
 
-    def test_older_services_require_readable_private_references(self):
-        self.process(123, 1, self.checkout)
-        for pid, name in enumerate(("systemd", "sd-pam", "ssh-agent", "sshd"), 20):
-            self.nonterminal_process(pid)
-            (self.proc / str(pid) / "cmdline").write_bytes(name.encode() + b"\0")
-        self.assertEqual(stopped_loop_execution(self.checkout, self.shells(123), proc=self.proc), {"123": 7})
-        self.deny_private_references(range(20, 24))
-        with self.assertRaisesRegex(TaskError, "Cannot prove task processes stopped"):
-            stopped_loop_execution(self.checkout, self.shells(123), proc=self.proc)
+    def test_unrelated_references_are_out_of_scope_regardless_of_age_or_ancestry(self):
+        for started in (6, 7, 8):
+            for kind in ("private", "cwd", "argv", "fd", "ancestor"):
+                with self.subTest(started=started, kind=kind):
+                    case = LoopProcessTests(); case.setUp()
+                    try:
+                        case.process(123, 938 if kind == "ancestor" else 1, case.checkout)
+                        case.process(938, 1, case.checkout if kind == "cwd" else case.proc,
+                                     started=started, comm="systemd",
+                                     argv=f"worker\0{case.checkout}\0" if kind == "argv" else "systemd\0")
+                        if kind in {"fd", "private", "ancestor"}:
+                            (case.proc / "938" / "fd" / "8").symlink_to(case.checkout / "work.txt")
+                        reads = case.deny_private_references(938) if kind in {"private", "ancestor"} else []
+                        self.assertEqual(stopped_loop_execution(case.checkout, case.shells(123), proc=case.proc),
+                                         {"123": 7})
+                        self.assertEqual(reads, [], "Unmanaged references must not be inspected")
+                    finally:
+                        case.doCleanups()
 
-    def test_older_live_worker_with_inaccessible_checkout_descriptor_refuses(self):
-        self.process(123, 1, self.checkout)
-        self.nonterminal_process(124)
-        descriptor = self.proc / "124" / "fd" / "8"
-        descriptor.symlink_to(self.checkout / "work.txt")
-        original = os.readlink
-        def denied(path, *args, **kwargs):
-            if Path(path) == descriptor:
-                raise PermissionError("live worker's checkout descriptor is private")
-            return original(path, *args, **kwargs)
-        with patch("os.readlink", side_effect=denied) as reads, \
-                self.assertRaisesRegex(TaskError, "Cannot prove task processes stopped"):
-            stopped_loop_execution(self.checkout, self.shells(123), proc=self.proc)
-        self.assertIn(descriptor, [call.args[0] for call in reads.call_args_list])
-
-    def test_inaccessible_newer_or_unknown_identity_is_never_assumed_unrelated(self):
-        for kind in ("newer", "same_tick", "terminal", "argv", "stat", "child", "session", "unknown_session"):
+    def test_attributable_workers_refuse_even_without_checkout_references(self):
+        for kind in ("child", "grandchild", "reparented_session", "reparented_group", "thread"):
             with self.subTest(kind=kind):
                 case = LoopProcessTests(); case.setUp()
                 try:
                     case.process(123, 1, case.checkout)
-                    case.nonterminal_process(124, started=8 if kind == "newer" else 7 if kind == "same_tick" else 6,
-                                             parent=123 if kind == "child" else 1)
-                    if kind in {"terminal", "session", "unknown_session"}:
-                        stat = case.proc / "124" / "stat"
-                        fields = stat.read_text().rpartition(") ")[2].split()
-                        fields[4 if kind == "terminal" else 3] = "0" if kind == "unknown_session" else "123"
-                        stat.write_text("124 (service) " + " ".join(fields))
-                    case.deny_private_references([124])
-                    if kind in {"argv", "stat"}:
-                        name = "cmdline" if kind == "argv" else "stat"
-                        method = "read_bytes" if kind == "argv" else "read_text"
-                        original = getattr(Path, method)
-                        def denied(path, *args, **kwargs):
-                            if path == case.proc / "124" / name:
-                                raise PermissionError("identity denied")
-                            return original(path, *args, **kwargs)
-                        case.enterContext(patch.object(Path, method, denied))
-                    with case.assertRaises(TaskError):
+                    case.process(124, 123 if kind in {"child", "grandchild"} else 1, case.proc,
+                                 argv="worker\0", state="Z" if kind == "grandchild" else "S")
+                    if kind == "grandchild":
+                        case.process(125, 124, case.proc, argv="worker\0")
+                    if kind in {"reparented_session", "reparented_group"}:
+                        case.stat_fields(124, **{"2" if kind == "reparented_group" else "3": 123})
+                    if kind == "thread":
+                        (case.proc / "124").rename(case.proc / "123" / "task" / "124")
+                    with self.assertRaisesRegex(TaskError, "registered task execution stopped"):
                         stopped_loop_execution(case.checkout, case.shells(123), proc=case.proc)
                 finally:
                     case.doCleanups()
 
-    def test_accessible_checkout_evidence_overrides_older_private_process(self):
-        self.process(123, 1, self.checkout)
-        self.nonterminal_process(124)
-        (self.proc / "124" / "cmdline").write_bytes(os.fsencode(f"worker\0{self.checkout}\0"))
-        self.deny_private_references([124])
-        with self.assertRaisesRegex(TaskError, "Process 124"):
-            stopped_loop_execution(self.checkout, self.shells(123), proc=self.proc)
+    def test_registered_execution_evidence_must_be_complete(self):
+        for kind in ("missing", "exe", "argv", "cwd", "running", "session", "foreground", "no_tty",
+                     "task_list", "thread_stat", "stat", "visibility", "private"):
+            with self.subTest(kind=kind):
+                case = LoopProcessTests(); case.setUp()
+                try:
+                    case.process(123, 1, case.checkout)
+                    root = case.proc / "123"
+                    if kind == "missing":
+                        shutil.rmtree(root)
+                    elif kind == "exe":
+                        (root / "exe").unlink()
+                        (root / "exe").symlink_to(sys.executable)
+                    elif kind == "argv":
+                        (root / "cmdline").write_bytes(b"bash\0-c\0worker\0")
+                    elif kind == "cwd":
+                        (root / "cwd").unlink()
+                        (root / "cwd").symlink_to(case.proc)
+                    elif kind in {"running", "session", "foreground", "no_tty"}:
+                        index, value = {"running": (0, "R"), "session": (3, 999),
+                                        "foreground": (5, 999), "no_tty": (4, 0)}[kind]
+                        case.stat_fields(123, **{str(index): value})
+                    elif kind == "task_list":
+                        (root / "task" / "123").unlink()
+                    elif kind == "thread_stat":
+                        (root / "task" / "124").mkdir()
+                    elif kind == "stat":
+                        (root / "stat").write_text("malformed")
+                    elif kind == "visibility":
+                        table = case.proc / "self" / "mounts"
+                        table.write_bytes(table.read_bytes().replace(b"rw,", b"rw,hidepid=2,"))
+                    else:
+                        case.deny_private_references(123)
+                    with self.assertRaisesRegex(TaskError, "--abort refused"):
+                        stopped_loop_execution(case.checkout, case.shells(123), proc=case.proc)
+                finally:
+                    case.doCleanups()
+        with self.assertRaisesRegex(TaskError, "Missing original task shells"):
+            stopped_loop_execution(self.checkout, {}, proc=self.proc)
+        for platform in ("darwin", "win32"):
+            with patch("task_start.integration_process.sys.platform", platform), self.assertRaisesRegex(TaskError, "Linux"):
+                stopped_loop_execution(self.checkout, self.shells(123), proc=self.proc)
 
-    def test_descriptor_closing_during_scan_is_not_missing_process_identity(self):
-        self.process(123, 1, self.checkout)
-        self.process(124, 1, self.proc)
-        descriptor = self.proc / "124" / "fd" / "8"
-        descriptor.symlink_to(self.proc / "unrelated")
-        original = os.readlink
-        def closing(path, *args, **kwargs):
-            if Path(path) == descriptor:
-                descriptor.unlink()
-                raise FileNotFoundError("descriptor closed")
-            return original(path, *args, **kwargs)
-        with patch("os.readlink", side_effect=closing):
-            self.assertEqual(stopped_loop_execution(self.checkout, self.shells(123), proc=self.proc), {"123": 7})
+    def test_graph_disappearance_only_tolerates_genuinely_vanished_unrelated_entries(self):
+        for kind in ("unrelated_exit", "missing_stat", "denied_stat", "shell_exit", "shell_reuse"):
+            with self.subTest(kind=kind):
+                case = LoopProcessTests(); case.setUp()
+                try:
+                    case.process(123, 1, case.checkout)
+                    case.process(938, 1, case.proc)
+                    read_text = Path.read_text
+                    changed = False
+                    target = case.proc / ("123" if kind.startswith("shell") else "938")
+                    def racing(path, *args, **kwargs):
+                        nonlocal changed
+                        if path == target / "stat" and not changed:
+                            changed = True
+                            if kind == "denied_stat":
+                                raise PermissionError("ancestry unavailable")
+                            if kind == "shell_reuse":
+                                observed = read_text(path, *args, **kwargs)
+                                case.stat_fields(123, **{"19": 8})
+                                return observed
+                            if kind == "missing_stat":
+                                path.unlink()
+                            else:
+                                shutil.rmtree(target)
+                            raise FileNotFoundError("process observation vanished")
+                        return read_text(path, *args, **kwargs)
+                    with patch.object(Path, "read_text", racing):
+                        if kind == "unrelated_exit":
+                            self.assertEqual(stopped_loop_execution(case.checkout, case.shells(123), proc=case.proc),
+                                             {"123": 7})
+                        else:
+                            with self.assertRaises(TaskError):
+                                stopped_loop_execution(case.checkout, case.shells(123), proc=case.proc)
+                    self.assertTrue(changed)
+                finally:
+                    case.doCleanups()
 
-    def test_disappearing_process_is_tolerated_but_missing_live_cwd_is_bounded(self):
-        self.process(123, 1, self.checkout)
-        self.process(124, 1, self.proc)
-        original = os.readlink
-        def exited(path, *args, **kwargs):
-            if Path(path) == self.proc / "124" / "cwd":
-                import shutil
-                shutil.rmtree(self.proc / "124")
-                raise FileNotFoundError("process exited")
-            return original(path, *args, **kwargs)
-        with patch("os.readlink", side_effect=exited):
-            self.assertEqual(stopped_loop_execution(self.checkout, self.shells(123), proc=self.proc), {"123": 7})
-        self.process(124, 1, self.proc)
-        (self.proc / "124" / "cwd").unlink()
-        with patch("os.readlink", wraps=original) as reads, self.assertRaises(TaskError):
-            stopped_loop_execution(self.checkout, self.shells(123), proc=self.proc)
-        self.assertEqual(sum(c.args[0] == self.proc / "124" / "cwd" for c in reads.call_args_list), 3)
-
-    def test_private_process_pid_reuse_during_observation_refuses(self):
-        self.process(123, 1, self.checkout)
-        self.nonterminal_process(124)
-        original = os.readlink
-        def replaced(path, *args, **kwargs):
-            if Path(path) == self.proc / "124" / "cwd":
-                stat = self.proc / "124" / "stat"
-                fields = stat.read_text().rpartition(") ")[2].split()
-                fields[19] = "8"
-                stat.write_text("124 (replacement) " + " ".join(fields))
-                raise PermissionError("changed")
-            return original(path, *args, **kwargs)
-        with patch("os.readlink", side_effect=replaced), self.assertRaises(TaskError):
-            stopped_loop_execution(self.checkout, self.shells(123), proc=self.proc)
-
-    def test_zombie_transition_during_reference_inspection_is_verified(self):
-        self.process(123, 1, self.checkout)
-        self.nonterminal_process(124)
-        entry = self.proc / "124"
-        stat = entry / "stat"
-        original_stat = stat.read_text()
-        read_bytes, readlink, iterdir = Path.read_bytes, os.readlink, Path.iterdir
-        for stage in ("cmdline", "final_cmdline", "cwd", "private_cwd", "fd"):
-            with self.subTest(stage=stage):
-                stat.write_text(original_stat)
-                (entry / "cmdline").write_bytes(b"worker\0")
-                cmdline_reads = 0
-                def terminate():
-                    fields = original_stat.rpartition(") ")[2].split()
-                    fields[0] = "Z"
-                    stat.write_text("124 (worker) " + " ".join(fields))
-                    (entry / "cmdline").write_bytes(b"")
-                def command(path, *args, **kwargs):
-                    nonlocal cmdline_reads
-                    if path == entry / "cmdline":
-                        cmdline_reads += 1
-                        if (stage == "cmdline" or stage == "final_cmdline" and cmdline_reads == 2):
-                            terminate()
-                    return read_bytes(path, *args, **kwargs)
-                def link(path, *args, **kwargs):
-                    if Path(path) == entry / "cwd" and stage in {"cwd", "private_cwd"}:
-                        terminate()
-                        if stage == "private_cwd":
-                            raise PermissionError("process terminated during cwd inspection")
-                        raise FileNotFoundError("zombie has no cwd")
-                    return readlink(path, *args, **kwargs)
-                def descriptors(path):
-                    if path == entry / "fd" and stage == "fd":
-                        terminate()
-                        raise FileNotFoundError("process terminated during descriptor inspection")
-                    return iterdir(path)
-                with patch.object(Path, "read_bytes", command), patch("os.readlink", side_effect=link), \
-                        patch.object(Path, "iterdir", descriptors):
-                    self.assertEqual(stopped_loop_execution(self.checkout, self.shells(123), proc=self.proc),
-                                     {"123": 7})
-                self.assertTrue(entry.is_dir())  # An unreaped zombie keeps its PID directory.
-                self.assertEqual((entry / "cmdline").read_bytes(), b"")
-
-    def test_failed_reference_scan_rejects_live_reused_or_unverifiable_process(self):
-        self.process(123, 1, self.checkout)
-        self.nonterminal_process(124)
-        entry = self.proc / "124"
-        stat = entry / "stat"
-        original_stat, read_bytes = stat.read_text(), Path.read_bytes
-        for fault in ("live", "reused_live", "reused_zombie", "changed_parent", "changed_session",
-                      "malformed_stat", "missing_stat", "denied_stat"):
-            with self.subTest(fault=fault):
-                stat.write_text(original_stat)
-                observed = False
-                read_text = Path.read_text
-                def command(path, *args, **kwargs):
-                    nonlocal observed
-                    if path == entry / "cmdline":
-                        observed = True
-                        fields = original_stat.rpartition(") ")[2].split()
-                        fields[0] = "S" if fault in {"live", "reused_live"} else "Z"
-                        if fault.startswith("reused"):
-                            fields[19] = "8"
-                        if fault in {"changed_parent", "changed_session"}:
-                            fields[1 if fault == "changed_parent" else 3] = "999"
-                        stat.write_text("bad stat" if fault == "malformed_stat"
-                                        else "124 (worker) " + " ".join(fields))
-                        if fault == "missing_stat":
-                            stat.unlink()
-                        return b""
-                    return read_bytes(path, *args, **kwargs)
-                def identity(path, *args, **kwargs):
-                    if path == stat and observed and fault == "denied_stat":
-                        raise PermissionError("cannot verify process termination")
-                    return read_text(path, *args, **kwargs)
-                with patch.object(Path, "read_bytes", command), patch.object(Path, "read_text", identity), \
-                        self.assertRaisesRegex(TaskError, "Cannot prove task processes stopped"):
-                    stopped_loop_execution(self.checkout, self.shells(123), proc=self.proc)
-                self.assertTrue(observed)
+    def test_shell_reference_races_and_worker_appearing_at_final_inspection_refuse(self):
+        for kind in ("vanished_cwd", "reused_pid", "new_child"):
+            with self.subTest(kind=kind):
+                case = LoopProcessTests(); case.setUp()
+                try:
+                    case.process(123, 1, case.checkout)
+                    readlink, calls = os.readlink, 0
+                    def racing(path, *args, **kwargs):
+                        nonlocal calls
+                        if Path(path) == case.proc / "123" / "cwd":
+                            calls += 1
+                            if kind == "vanished_cwd":
+                                raise FileNotFoundError("missing registered cwd")
+                            if calls == 2:
+                                if kind == "reused_pid":
+                                    case.stat_fields(123, **{"19": 8})
+                                else:
+                                    case.process(124, 123, case.proc, argv="worker\0")
+                        return readlink(path, *args, **kwargs)
+                    with patch("os.readlink", side_effect=racing), self.assertRaises(TaskError):
+                        stopped_loop_execution(case.checkout, case.shells(123), proc=case.proc)
+                    self.assertLessEqual(calls, 2, "Uncertain registered evidence must not retry indefinitely")
+                finally:
+                    case.doCleanups()
 
 
 class StoppedProviderTests(unittest.TestCase):
@@ -798,6 +748,12 @@ class RealShellTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.path = Path(self.directory.name)
+        self.start_shell()
+        # Sandboxes may stack /proc mounts. The live test controls visibility;
+        # synthetic fixtures separately exercise unreadable/hidden mount evidence.
+        self.enterContext(patch("task_start.integration_process._process_visibility", return_value=b"controlled mounts"))
+
+    def start_shell(self):
         self.master, slave = pty.openpty()
         def terminal():
             os.setsid()
@@ -808,10 +764,6 @@ class RealShellTests(unittest.TestCase):
         os.close(slave)
         self.addCleanup(self.stop_shell)
         self.read_prompt()
-        # Sandboxes may stack /proc mounts. Exercise real PID/TTY/argv/ancestry
-        # here with a controlled visibility observation; separate proc fixtures
-        # exercise refusal for hidden/unreadable mount evidence.
-        self.enterContext(patch("task_start.integration_process._process_visibility", return_value=b"controlled mounts"))
 
     def stop_shell(self):
         self.shell.terminate()
@@ -834,7 +786,7 @@ class RealShellTests(unittest.TestCase):
     def proof(self):
         return stopped_loop_execution(self.path, {self.shell.pid: dict(cwd=self.path, argv=self.argv)})
 
-    def test_idle_shell_does_not_hide_background_or_detached_checkout_process(self):
+    def test_background_job_refuses_but_unmanaged_detached_worker_is_out_of_scope(self):
         self.assertIn(str(self.shell.pid), self.proof())
         os.write(self.master, b"sleep 30 &\n")
         self.read_prompt()
@@ -846,8 +798,161 @@ class RealShellTests(unittest.TestCase):
         worker = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], cwd=self.path,
                                   start_new_session=True)
         try:
-            with self.assertRaisesRegex(TaskError, "may still use the task checkout"):
-                self.proof()
+            # This worker can access the checkout but has no registered family
+            # or session evidence. Passing is a scope decision, not non-use proof.
+            self.assertIn(str(self.shell.pid), self.proof())
         finally:
             worker.terminate(); worker.wait()
         self.assertIn(str(self.shell.pid), self.proof())
+
+
+class ManagedAbortCliTests(unittest.TestCase):
+    """Real CLI/Git/checkpoints with controlled Herdr/provider and Linux evidence."""
+
+    @contextmanager
+    def execution(self, *, real_shell=False):
+        case, processes = AbortTests(), LoopProcessTests()
+        case.setUp()
+        processes.setUp()
+        shell = None
+        try:
+            (case.path / "tracked.txt").write_text("staged work")
+            case.command(case.path, "add", "tracked.txt")
+            (case.path / "tracked.txt").write_text("unstaged work")
+            (case.path / "untracked.txt").write_bytes(b"untracked\0work")
+            if real_shell:
+                # A real, disposable original PTY shell; only its /proc entry is
+                # exposed alongside the synthetic service in this process graph.
+                shell = RealShellTests()
+                shell.path = case.path
+                shell.start_shell()
+                (processes.proc / str(shell.shell.pid)).symlink_to(Path("/proc") / str(shell.shell.pid))
+                pane = case.panes[0]["pane_id"]
+                case.identity_command.side_effect = lambda *args: dict(process_info=dict(
+                    pane_id=pane, shell_pid=shell.shell.pid, foreground_process_group_id=shell.shell.pid,
+                    foreground_processes=[dict(pid=shell.shell.pid, argv=shell.argv)]))
+            else:
+                processes.process(101, 1, case.path)
+            original = case.interrupt("implementation")
+            case.stop_agents()
+            case.proof.side_effect = lambda path, shells: stopped_loop_execution(path, shells, proc=processes.proc)
+            yield case, processes, original
+        finally:
+            if shell:
+                shell.doCleanups()
+            processes.doCleanups()
+            case.doCleanups()
+
+    def test_cli_real_stopped_shell_ignores_denied_pid_938_and_preserves_original_claim(self):
+        with self.execution(real_shell=True) as (case, processes, original):
+            processes.process(938, 1, case.path, comm="systemd", argv="systemd\0", started=1)
+            (processes.proc / "938" / "fd" / "8").symlink_to(case.path / "tracked.txt")
+            reads = processes.deny_private_references(938, denied={"cwd", "fd"})
+            # The real shell's parent is also outside the managed family. Give
+            # its synthetic entry accessible checkout references, like an editor.
+            processes.process(os.getpid(), 1, case.path, argv=f"external-parent\0{case.path}\0", started=1)
+            accessible_reads = processes.deny_private_references(os.getpid(), denied=set())
+            before, rows = case.content(), case.registry.list(include_retired=True)
+            delivery_files = {p.name: p.read_bytes() for p in Path(original["delivery"]["directory"]).iterdir()
+                              if p.is_file()}
+            with patch("sys.stdout", io.StringIO()) as output, \
+                    patch("task_start.loop.load_local", side_effect=AssertionError("Local config accessed")):
+                self.assertEqual(cli.main(["loop", "DEV-7", "--abort", "--json"]), 0)
+            self.assertEqual(json.loads(output.getvalue())["state"], "aborted")
+            journal = case.store.abort_journal(original["run_id"])
+            self.assertEqual(journal["original"], original)
+            self.assertEqual(journal["contexts"], rows)
+            self.assertEqual(journal["snapshot"], before)
+            self.assertEqual(len(journal["processes"]), 1)
+            self.assertEqual(case.content(), before)
+            self.assertEqual(case.command(case.path, "branch", "--show-current"), case.branch)
+            self.assertEqual(reads, [], "Permission denial must not be used as unrelated-process evidence")
+            self.assertEqual(accessible_reads, [], "An ancestor with checkout references is outside the proof")
+            self.assertEqual(case.proof.call_count, 2, "The transaction must repeat its process proof before journaling")
+            self.assertEqual(case.abort().state, "aborted")
+            self.assertEqual(case.store.abort_journal(original["run_id"]), journal)
+            self.assertEqual({p.name: p.read_bytes() for p in Path(original["delivery"]["directory"]).iterdir()
+                              if p.is_file()}, delivery_files)
+            with self.assertRaises(TaskError):
+                seal(original["delivery"]["directory"], original["run_id"],
+                     original["active_pass"]["pass_id"], str(case.path), case.base, case.branch)
+            self.assertIsNone(PublicationStore(case.path).read()["acceptance"])
+
+    def test_cli_refusal_creates_no_journal_or_replacement_handoff(self):
+        for kind in ("child", "group", "reparented", "exe", "argv", "cwd", "missing_shell", "stat",
+                     "pid_reuse_before_journal", "worker_before_journal", "live_pi", "live_codex",
+                     "unknown_pane", "active_pane", "endpoint", "provider", "provider_session", "terminal"):
+            with self.subTest(kind=kind), self.execution() as (case, processes, original):
+                root = processes.proc / "101"
+                if kind in {"child", "group", "reparented"}:
+                    processes.process(124, 101 if kind == "child" else 1, processes.proc, argv="worker\0")
+                    if kind != "child":
+                        processes.stat_fields(124, **{"2" if kind == "group" else "3": 101})
+                elif kind == "exe":
+                    (root / "exe").unlink()
+                    (root / "exe").symlink_to(sys.executable)
+                elif kind == "argv":
+                    (root / "cmdline").write_bytes(b"codex\0")
+                elif kind == "cwd":
+                    (root / "cwd").unlink()
+                    (root / "cwd").symlink_to(processes.proc)
+                elif kind == "missing_shell":
+                    shutil.rmtree(root)
+                elif kind == "stat":
+                    (root / "stat").unlink()
+                elif kind in {"pid_reuse_before_journal", "worker_before_journal"}:
+                    def changed(path, shells):
+                        if case.proof.call_count == 2:
+                            if kind == "pid_reuse_before_journal":
+                                processes.stat_fields(101, **{"19": 8})
+                            else:
+                                processes.process(124, 101, processes.proc, argv="worker\0")
+                        return stopped_loop_execution(path, shells, proc=processes.proc)
+                    case.proof.side_effect = changed
+                elif kind.startswith("live_"):
+                    case.panes[0].update(agent=kind.removeprefix("live_"), agent_status="working")
+                elif kind in {"unknown_pane", "active_pane"}:
+                    case.panes.append(dict(case.panes[0], pane_id="extra", terminal_id="extra",
+                                           agent="codex" if kind == "active_pane" else None))
+                elif kind == "endpoint":
+                    case.enterContext(patch.object(case.identities, "endpoint", return_value="/different.sock"))
+                elif kind == "provider":
+                    case.implementer.verify_stopped_session = lambda *args: (_ for _ in ()).throw(TaskError("Pending turn"))
+                elif kind == "provider_session":
+                    case.registry.update("DEV-7-I1", session_id="replaced")
+                else:
+                    case.panes[0]["terminal_id"] = "replaced"
+                before, rows = case.content(), case.registry.list(include_retired=True)
+                counts = len(case.impl_prompts), len(case.prompts)
+                with patch("sys.stderr", io.StringIO()) as error:
+                    self.assertEqual(cli.main(["loop", "DEV-7", "--abort", "--json"]), 1)
+                self.assertTrue(error.getvalue())
+                self.assertIsNone(case.store.abort_journal(original["run_id"]))
+                self.assertEqual(case.store.read()[0], original)
+                self.assertEqual(case.registry.list(include_retired=True), rows)
+                self.assertEqual(case.content(), before)
+                self.assertEqual((len(case.impl_prompts), len(case.prompts)), counts)
+                self.assertIsNone(PublicationStore(case.path).read()["acceptance"])
+
+    def test_interrupted_retry_pins_process_identity_and_keeps_abandonment_evidence(self):
+        with self.execution() as (case, processes, original):
+            before = case.content()
+            with patch.object(ContextRegistry, "reconcile_loop_abort", side_effect=KeyboardInterrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    case.abort()
+            journal = case.store.abort_journal(original["run_id"])
+            self.assertEqual(journal["original"], original)
+            self.assertEqual(journal["processes"], {"101": 7})
+            processes.stat_fields(101, **{"19": 8})
+            with self.assertRaisesRegex(TaskError, "changed during abort"):
+                case.abort()
+            self.assertEqual(case.store.abort_journal(original["run_id"]), journal)
+            self.assertEqual(case.store.read()[0]["status"], "aborting")
+            self.assertEqual(case.content(), before)
+            # Restore only the synthetic observation to model retry on the same
+            # original shell, never accepting a real replacement shell.
+            processes.stat_fields(101, **{"19": 7})
+            self.assertEqual(case.abort().state, "aborted")
+            self.assertEqual(case.abort().state, "aborted")
+            self.assertEqual(case.store.abort_journal(original["run_id"]), journal)
+            self.assertEqual(case.content(), before)

@@ -609,16 +609,34 @@ Abort uses the task lock and exclusive workflow ownership gate. Another active
 controller refuses it. It requires exact saved issue/checkout/branch, context,
 provider, pane and terminal identities; positive idle-shell executable, argv,
 TTY, PID/start-time and process-family evidence; and readable Linux `/proc`.
-It also rejects observable detached same-user processes with checkout cwd,
-arguments or open files. Descriptor closures and confirmed process exits tolerate
-bounded observation races. Failed reference observations recheck the original
-PID, start time and identity; a verified transition to zombie/dead state can pass
-even while the PID directory remains. Inaccessible live cwd/descriptors refuse
-regardless of process age, argv or ancestry/session. Missing identity evidence,
-PID reuse and other identity changes also refuse.
-This is local process evidence, not a supervisor for
-remote hosts or arbitrary external access. A missing pane or an `idle` label
-alone never proves stoppage. Codex additionally requires a terminal provider turn
+For the trusted single-user **Linux V1 Developer Preview**, this proof covers the
+registered execution: original shells, live descendants and related threads,
+background jobs, and process-group/session members, including observable
+reparented workers. It uses host process enumeration/stat data to establish that
+family, but does not read unrelated processes' private cwd, descriptors or command
+lines. An unrelated process is outside this policy even if it is old, is a task
+shell's ancestor, has an accessible checkout reference, or denies private reference
+reads. Neither process names nor age exempt attributable workers. Incomplete
+family/stat visibility still refuses because attribution cannot be established.
+
+The process graph and original shell identities are checked repeatedly, and the
+abort transaction rechecks them before writing its journal. Genuinely vanished
+unrelated entries are tolerated when family evidence remains complete. Missing,
+replaced, running or unverifiable registered shells, PID reuse, live attributable
+workers and unresolved observation races refuse. On refusal, inspect
+`task contexts ISSUE --all` and the original panes, stop remaining task jobs, and
+retry `--abort` from outside the checkout on the same Linux host/PID namespace.
+Keep the original shells open; do not replace panes or edit the claim to bypass
+missing evidence. A missing pane or an `idle` label alone never proves stoppage.
+
+This is a task-scoped workflow ownership guarantee, **not machine-wide checkout
+non-use or sandbox isolation**. A trusted user's arbitrary external process or a
+fully detached/untracked helper that escapes registered ancestry/session evidence
+can still edit the checkout. The operator must stop such helpers before reuse;
+a successful abort does not prove their absence. V1 does not support Windows or
+macOS abort verification.
+
+Codex additionally requires a terminal provider turn
 and an empty queue; delivered claims must match the latest input. Pi verifies the
 immutable persisted conversation and claimed prompt's history chain. Pending
 input, provider uncertainty, changed identities and conflicting claims refuse.
