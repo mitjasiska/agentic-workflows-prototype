@@ -1,16 +1,21 @@
 """Private acceptance, intent and irreversible publication evidence, not reports."""
 
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import json
 import os
 from pathlib import Path
 import re
 import tempfile
+import threading
+import time
 
 from . import TaskError
 from .ownership import ownership_gate
 from .review_result import unique_object
 from .workspace import Git
+
+
+_owned = threading.local()
 
 
 def verify_publication_history(history, binding, identity):
@@ -104,21 +109,52 @@ def prepare_review_continuation(saved, git, binding, base):
 
 class PublicationStore:
     def __init__(self, worktree):
+        self.worktree = Path(worktree)
         self.directory = Path(Git(worktree).command("rev-parse", "--absolute-git-dir").strip())
         self.path = self.directory / "agentic-workflows-publication.json"
+        self.identity = self._identity()
+
+    def _identity(self):
+        try:
+            paths = (self.worktree, self.directory)
+            if any(p.resolve() != p for p in paths):
+                raise OSError("aliased workspace")
+            return tuple((p.stat().st_dev, p.stat().st_ino) for p in paths)
+        except OSError:
+            raise TaskError("Workspace identity is missing or aliased; resolve the exact checkout again") from None
 
     @contextmanager
-    def locked(self):
-        with ownership_gate():
-            with self._locked():
-                yield self
+    def locked(self, *, allow_owned=False, registry=None):
+        with ExitStack() as locks:
+            with ownership_gate(registry=registry):
+                if hasattr(self, "worktree"):
+                    if (self._identity() != self.identity or
+                            Path(Git(self.worktree).command("rev-parse", "--absolute-git-dir").strip()) != self.directory):
+                        raise TaskError("Workspace identity changed before locking; resolve the exact checkout again")
+                key = (os.getpid(), str(self.directory))
+                owned = getattr(_owned, "locks", set())
+                if not (allow_owned and key in owned):
+                    locks.enter_context(self._locked())
+            yield self
 
     @contextmanager
-    def _locked(self):
+    def repository_locked(self):
+        """Permanent-checkout administration may wait, always OUTSIDE the gate.
+
+        No holder may wait for a task lock while holding this repository lock.
+        The permanent checkout is never a disposal target.
+        """
+        with self._locked(timeout=30):
+            if self._identity() != self.identity:
+                raise TaskError("Permanent repository identity changed during Git administration")
+            yield self
+
+    @contextmanager
+    def _locked(self, *, timeout=0):
         """An OS lock survives neither process exit nor interruption; no stale claims."""
         path = self.directory / "agentic-workflows-publication.lock"
         try:
-            fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+            fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         except OSError:
             raise TaskError("Cannot lock review/publication state in the private Git directory; check filesystem access") from None
         try:
@@ -131,10 +167,30 @@ class PublicationStore:
                     msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
                 else:
                     import fcntl
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    deadline = time.monotonic() + timeout
+                    while True:
+                        try:
+                            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            break
+                        except BlockingIOError:
+                            if time.monotonic() >= deadline:
+                                raise
+                            time.sleep(0.01)
             except OSError:
-                raise TaskError("Another review or publication owns this worktree; wait for it to finish") from None
-            yield self
+                if timeout:
+                    raise TaskError("Shared repository Git administration is busy; retry shortly after its "
+                                    "fetch/base update or worktree removal finishes") from None
+                raise TaskError(f"Another controller owns this worktree: {getattr(self, 'worktree', self.directory)} "
+                                "(loop, review, publication, cleanup or Git administration); "
+                                "finish or stop that controller before retrying this workspace") from None
+            key = (os.getpid(), str(self.directory))
+            if not hasattr(_owned, "locks"):
+                _owned.locks = set()
+            _owned.locks.add(key)
+            try:
+                yield self
+            finally:
+                _owned.locks.remove(key)
         finally:
             os.close(fd)
 

@@ -57,6 +57,20 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(self.registry.get(first), original)
         self.assertEqual(self.allocate(), "DEV-20-I2")
 
+    def test_v2_repository_discovery_migration_preserves_context_history(self):
+        context = self.allocate()
+        before = self.registry.get(context)
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TABLE ownership_repositories")
+            db.execute("PRAGMA user_version=2")
+        self.assertEqual(self.registry.repositories(), [])
+        self.assertEqual(self.registry.get(context), before)
+        repo = self.path.parent / "contextless-repository"
+        self.registry.remember_repository(repo)
+        self.assertEqual(ContextRegistry(self.path).repositories(), [str(repo)])
+        self.assertEqual(self.registry.get(context), before)
+        self.assertEqual(self.allocate(), "DEV-20-I2")
+
     def test_concurrent_processes_allocate_once_each_including_initial_schema(self):
         with multiprocessing.get_context("spawn").Pool(6) as pool:
             batches = pool.starmap(allocate_process, [(str(self.path), 8)] * 6)
@@ -64,6 +78,37 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(set(ids), {f"DEV-20-R{n}" for n in range(1, 49)})
         self.assertEqual(len(ids), len(set(ids)))
         self.assertEqual(self.allocate(role="review"), "DEV-20-R49")
+
+    def test_second_controller_can_allocate_before_creator_commits_schema(self):
+        import os
+        parent, child = multiprocessing.Pipe()
+        real_open = os.open
+        def creator():
+            def paused_open(path, flags, *args, **kwargs):
+                fd = real_open(path, flags, *args, **kwargs)
+                if Path(path) == self.path and flags & os.O_EXCL:
+                    child.send("created")
+                    if not child.poll(10):
+                        raise AssertionError("creator was never released")
+                    child.recv()
+                return fd
+            with patch("task_start.contexts.os.open", side_effect=paused_open):
+                child.send(self.allocate())
+        process = multiprocessing.get_context("fork").Process(target=creator)
+        process.start(); child.close()
+        try:
+            self.assertTrue(parent.poll(10)); self.assertEqual(parent.recv(), "created")
+            self.assertEqual(self.allocate(), "DEV-20-I1")
+            parent.send("finish")
+            self.assertTrue(parent.poll(10)); self.assertEqual(parent.recv(), "DEV-20-I2")
+            process.join(5)
+            self.assertEqual(process.exitcode, 0)
+            self.assertEqual(len(self.registry.list()), 2)
+        finally:
+            if process.is_alive():
+                process.terminate()
+            process.join(5)
+            parent.close()
 
     def test_pending_pane_claim_is_atomic_and_cannot_be_silently_reused(self):
         metadata = dict(endpoint="/server.sock", pane_id="w1:p1")

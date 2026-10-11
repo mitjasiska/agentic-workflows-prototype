@@ -828,7 +828,7 @@ class PublishingTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(TaskError):
                 publish("DEV-7")
         self.store.write(saved)
-        with self.store.locked(), self.assertRaisesRegex(TaskError, "Another review or publication"):
+        with self.store.locked(), self.assertRaisesRegex(TaskError, "Another controller"):
             publish("DEV-7")
         self.assertFalse(self.operations("commit"))
 

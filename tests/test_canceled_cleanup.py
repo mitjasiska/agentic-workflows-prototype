@@ -874,7 +874,7 @@ class ForcedCleanupTests(unittest.TestCase):
         old = next(c for c in completed["contexts"] if c["role"] == "integration")
         self.assertFalse(context_claimed(old, [completed]))
 
-    def test_ownership_lock_excludes_foreign_allocation_during_final_preflight(self):
+    def test_workspace_lock_excludes_foreign_allocation_during_final_preflight(self):
         injected = False
         def final_mounts(paths):
             nonlocal injected
@@ -883,7 +883,7 @@ class ForcedCleanupTests(unittest.TestCase):
                 with ThreadPoolExecutor(max_workers=1) as pool:
                     future = pool.submit(self.registry.allocate, "DEV-8", "integration", agent="codex",
                                          repository=str(self.repo), worktree=str(self.path))
-                    with self.assertRaisesRegex(TaskError, "ownership is busy"):
+                    with self.assertRaisesRegex(TaskError, "owns this worktree|Pending cleanup"):
                         future.result()
                 injected = True
         with patch("task_start.cleanup.check_mounts", side_effect=final_mounts):
@@ -900,7 +900,7 @@ class ForcedCleanupTests(unittest.TestCase):
         self.assertEqual(self.registry.get(context)["state"], "retired")
 
     def test_publication_lock_refuses_concurrent_controller(self):
-        with self.publication.locked(), self.assertRaisesRegex(TaskError, "active workflow controller"):
+        with self.publication.locked(), self.assertRaisesRegex(TaskError, "owns this worktree"):
             cli.cleanup("DEV-7", force=True)
         self.assert_preserved()
 

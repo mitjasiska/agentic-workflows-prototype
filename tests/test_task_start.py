@@ -389,6 +389,10 @@ class HerdrTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.repo = Path(self.temp.name).resolve()
+        self.enterContext(patch("task_start.contexts.registry_path", return_value=self.repo / "contexts.sqlite3"))
+        # This fixture exercises the Herdr JSON contract with a fake Git object;
+        # process-level Git/lock ownership is covered by workspace concurrency tests.
+        self.enterContext(patch("task_start.publication_state.PublicationStore"))
         self.tree_path = self.repo / "existing"
         self.tree_path.mkdir()
         self.herdr = Herdr(self.repo)
@@ -397,6 +401,7 @@ class HerdrTests(unittest.TestCase):
         self.git.remote_branches.return_value = []
         self.git.worktrees.return_value = []
         self.git.resolve_scope.return_value = None
+        self.git.load_retirement.return_value = None
         self.branch = "dev-7-add-ingestion-cli"
         self.tree = {"branch": self.branch, "path": str(self.tree_path), "label": "DEV-7",
                      "is_linked_worktree": True, "is_bare": False, "is_detached": False,
@@ -419,16 +424,17 @@ class HerdrTests(unittest.TestCase):
         self.git.worktrees.return_value = [{"worktree": str(self.tree_path), "branch": "refs/heads/" + self.tree["branch"]}]
 
     def test_create_command(self):
-        self.git.worktrees.side_effect = [[], [{"worktree": str(self.tree_path), "branch": "refs/heads/" + self.branch}]]
-        with patch("task_start.workspace.run", side_effect=[json.dumps({"result": self.listing}), json.dumps({"result": self.result("created")})]) as runner:
+        self.git.worktrees.side_effect = [[], [], [{"worktree": str(self.tree_path), "branch": "refs/heads/" + self.branch}]]
+        with patch("task_start.workspace.run", side_effect=[json.dumps({"result": self.listing}), json.dumps({"result": self.listing}), json.dumps({"result": self.result("created")})]) as runner:
             self.assertEqual(self.prepare(), Workspace(self.branch, self.tree_path, "w1", "w1:t5", "w1:p9", "workspace created and focused"))
         self.assertEqual(runner.call_args_list[0].args[0], ["herdr", "worktree", "list", "--cwd", str(self.repo)])
-        self.assertEqual(runner.call_args_list[1].args[0], ["herdr", "worktree", "create", "--cwd", str(self.repo), "--base", "main", "--branch", self.branch, "--label", "DEV-7", "--focus"])
+        self.assertEqual(runner.call_args_list[1], runner.call_args_list[0])  # Selection rechecked under admission.
+        self.assertEqual(runner.call_args_list[2].args[0], ["herdr", "worktree", "create", "--cwd", str(self.repo), "--base", "main", "--branch", self.branch, "--label", "DEV-7", "--focus"])
 
     def test_reopen_even_after_title_changed(self):
         self.tree["branch"] = "dev-7-previous-title"
         self.existing()
-        with patch("task_start.workspace.run", side_effect=[json.dumps({"result": self.listing}), json.dumps({"result": self.result("opened")})]) as runner:
+        with patch("task_start.workspace.run", side_effect=[json.dumps({"result": self.listing}), json.dumps({"result": self.listing}), json.dumps({"result": self.result("opened")})]) as runner:
             self.assertEqual(self.prepare().branch, "dev-7-previous-title")
         self.assertEqual(runner.call_args.args[0], ["herdr", "worktree", "open", "--cwd", str(self.repo), "--path", str(self.tree_path), "--label", "DEV-7", "--focus"])
 
@@ -457,7 +463,7 @@ class HerdrTests(unittest.TestCase):
                 self.prepare()
         result = self.result("created")
         result["workspace"]["focused"] = False
-        with patch.object(self.herdr, "command", side_effect=[self.listing, result]), self.assertRaises(TaskError):
+        with patch.object(self.herdr, "command", side_effect=[self.listing, self.listing, result]), self.assertRaisesRegex(TaskError, "did not confirm.*focus"):
             self.prepare()
 
     def test_mismatched_or_locked_git_worktree_refused(self):

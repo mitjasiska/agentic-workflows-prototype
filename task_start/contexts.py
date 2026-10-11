@@ -1,6 +1,6 @@
 """Machine-local context identities. No task text or semantic run reports live here."""
 
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager, nullcontext, ExitStack
 from dataclasses import replace
 from datetime import datetime, timezone
 import json
@@ -12,7 +12,7 @@ import sqlite3
 from . import TaskError
 from .integration_process import verify_shell_process
 from .sessions import merge_session, same_session
-from .ownership import ownership_gate, ownership_operation
+from .ownership import ownership_gate
 from .workspace import run
 
 
@@ -80,12 +80,19 @@ class ContextRegistry:
                     # schema (or completed migration) even when that claim rolls back.
                     db.commit()
                     db.execute("BEGIN IMMEDIATE")
-                elif version != 2:
+                elif version not in {2, 3}:
                     raise TaskError("Unsupported workflow context registry version")
+                if version in {0, 1, 2}:
+                    # Contextless workspaces can still have disposal journals.
+                    # Reuse the registry for discovery, never invent a context.
+                    db.execute("CREATE TABLE IF NOT EXISTS ownership_repositories (repository TEXT PRIMARY KEY)")
+                    db.execute("PRAGMA user_version = 3")
+                    db.commit()
+                    db.execute("BEGIN IMMEDIATE")
             else:
                 # mode=ro neither creates the file nor migrates/repairs the registry.
                 db = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
-                if db.execute("PRAGMA user_version").fetchone()[0] not in {1, 2}:
+                if db.execute("PRAGMA user_version").fetchone()[0] not in {1, 2, 3}:
                     raise TaskError("Unsupported workflow context registry version")
             db.row_factory = sqlite3.Row
             yield db
@@ -98,15 +105,75 @@ class ContextRegistry:
             if db is not None:
                 db.close()  # Rolls back any incomplete transaction.
 
+    def remember_repository(self, repository):
+        """Discover durable journals even when no agent context was allocated.
+
+        Caller holds exclusive admission through this commit and journal fsync.
+        This table is discovery only; journals still own exact resource claims.
+        """
+        path = Path(repository)
+        if not path.is_absolute() or path.resolve() != path:
+            raise TaskError("Ownership discovery requires the exact repository path")
+        with self.connection(write=True) as db:
+            db.execute("INSERT OR IGNORE INTO ownership_repositories VALUES (?)", (str(path),))
+
+    def repositories(self):
+        if not self.path.exists():
+            return []
+        with self.connection() as db:
+            if db.execute("PRAGMA user_version").fetchone()[0] < 3:
+                return []
+            return [row[0] for row in db.execute("SELECT repository FROM ownership_repositories ORDER BY repository")]
+
     @contextmanager
     def claim_connection(self, repository, worktree, *, endpoint=None, workspace_id=None, terminal_id=None):
         from .cleanup import check_unreserved
+        from .publication_state import PublicationStore
+        from .workspace import Git
         with ownership_gate(registry=self.path):
+            # Another allocator may have created the SQLite file without yet
+            # committing its schema. Initialize/snapshot in a short transaction,
+            # then close it before trying resource locks (never invert the order).
             with self.connection(write=True) as db:
-                contexts = [dict(row) for row in db.execute("SELECT * FROM contexts")]
-                check_unreserved(self, repository, worktree, endpoint=endpoint,
-                                 workspace_id=workspace_id, terminal_id=terminal_id, contexts=contexts)
-                yield db
+                history = [dict(row) for row in db.execute("SELECT * FROM contexts")]
+                repositories = {row[0] for row in db.execute("SELECT repository FROM ownership_repositories")}
+            with ExitStack() as locks:
+                # Claim admission cannot race a selected controller, including a
+                # different path claiming the same exact Herdr execution binding.
+                paths = {worktree} if worktree else set()
+                for context in history:
+                    if (not context["retired_at"] and endpoint is not None and context["endpoint"] == endpoint
+                            and (workspace_id is not None and context["workspace_id"] == workspace_id
+                                 or terminal_id is not None and context["terminal_id"] == terminal_id)):
+                        if context["worktree"]:
+                            paths.add(context["worktree"])
+                # Use trusted Git registrations, not arbitrary .git directories
+                # found by walking upward through the host filesystem.
+                repositories.update(c["repository"] for c in history if c["repository"])
+                if repository:
+                    repositories.add(str(repository))
+                registered = set()
+                for repo in sorted(repositories):
+                    if (Path(repo) / ".git").exists():
+                        registered.update(Path(t["worktree"]) for t in Git(Path(repo)).worktrees())
+                checkouts = set()
+                for path in paths:
+                    candidate = Path(path)
+                    enclosing = {p for p in registered if candidate.is_relative_to(p) and (p / ".git").exists()}
+                    # The permanent checkout contains shared administration, not
+                    # the linked task's lifetime ownership. Keep genuinely nested
+                    # task locks, but do not contend with an unrelated base fetch.
+                    checkouts.update(p for p in enclosing if str(p) not in repositories
+                                     or not any(q != p and q.is_relative_to(p) for q in enclosing))
+                    if (candidate / ".git").exists():
+                        checkouts.add(candidate)
+                for path in sorted(checkouts):
+                    locks.enter_context(PublicationStore(path).locked(allow_owned=True, registry=self.path))
+                with self.connection(write=True) as db:
+                    contexts = [dict(row) for row in db.execute("SELECT * FROM contexts")]
+                    check_unreserved(self, repository, worktree, endpoint=endpoint,
+                                     workspace_id=workspace_id, terminal_id=terminal_id, contexts=contexts)
+                    yield db
 
     def allocate(self, issue: str, role: str, *, agent: str, model: str | None = None,
                  mode: str | None = None, repository: str | None = None,
@@ -498,7 +565,6 @@ def pending_launch(execution, context_id, registry, herdr, *, require_idle=False
     return pane
 
 
-@ownership_operation
 def launch_registered(adapter, execution, *, registry: ContextRegistry | None = None,
                       herdr: HerdrContexts | None = None, handoff_factory=None):
     """Register a fresh launch; existing agents are never resumed or relabeled here."""
@@ -507,7 +573,6 @@ def launch_registered(adapter, execution, *, registry: ContextRegistry | None = 
     return launch_allocated(adapter, execution, context_id, registry, herdr, handoff_factory=handoff_factory)
 
 
-@ownership_operation
 def launch_allocated(adapter, execution, context_id, registry, herdr, *, handoff_factory=None,
                      persist_observer=None):
     """Deliver once to an allocation owned by the caller (and its durable claim)."""

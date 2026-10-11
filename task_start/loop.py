@@ -1,5 +1,6 @@
 """Bounded implementation/review routing composed with the single-pass reviewer."""
 
+from contextlib import ExitStack
 from dataclasses import asdict, dataclass, replace
 import copy
 import hashlib
@@ -10,7 +11,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from . import TaskError
-from .ownership import ownership_operation
+from .ownership import ownership_gate, ownership_operation
 from .agent import AgentExecution, AgentOptions, AgentOverrides, adapter_for, resolve_agent_options
 from .metrics import observe_loop
 from .config import (check_project_settings_unchanged, load_local, load_projects, project_settings,
@@ -50,7 +51,7 @@ def environment(identifier, *, allow_bootstrap=False, pending_implementation=Non
     return env
 
 
-def bootstrap(env, options, global_settings):
+def bootstrap(env, options, global_settings, *, ownership=None):
     check_issue_structure(env.issue, env.local.issue_structure)
     adapter_for(options).check_available()
     target = Herdr(env.repo).resolve_task(Git(env.repo), env.issue.identifier, include_remotes=False)
@@ -59,7 +60,7 @@ def bootstrap(env, options, global_settings):
     env.workspace = prepare_task(env.issue, env.project, Linear(env.local.api_key), Git(env.repo),
                                  lambda: Herdr(env.repo), default_only=True,
                                  check_configuration=lambda: check_project_settings_unchanged(
-                                     global_settings, env.repo, env.local))
+                                     global_settings, env.repo, env.local), ownership=ownership)
     env.endpoint = env.identities.endpoint()
     env.base = Git(env.repo).command("rev-parse", "--verify", f"refs/heads/{env.project.base_branch}^{{commit}}").strip()
 
@@ -544,6 +545,7 @@ def drive(store, state, runtime, *, on_pass_result=None):
     return report(*store.read())
 
 
+@ownership_operation
 def control_store(identifier, *, optional=False):
     """Pause/status/continue locate exact private state without Linear or local config."""
     contexts = ContextRegistry().list(identifier)
@@ -598,15 +600,18 @@ def loop(identifier, *, action="run", agent_kind=None, model=None, mode=None,
                  impl_agent_kind=impl_agent_kind, impl_model=impl_model, impl_mode=impl_mode)
 
 
-@ownership_operation
 def _loop(identifier, *, action, agent_kind, model, mode, max_reviews, max_passes, timeout,
           from_review, on_pass_result, impl_agent_kind, impl_model, impl_mode):
     if action in {"pause", "status", "continue"}:
-        store, path = control_store(identifier)
-        if action == "pause":
-            return report(*store.pause())
-        if action == "status":
-            return report(*store.read())
+        with ownership_gate():
+            store, path = control_store(identifier)
+            if action == "pause":
+                from .cleanup import check_unreserved
+                target = store.read()[0]["binding"]
+                check_unreserved(ContextRegistry(), target["repository"], target["worktree"])
+                return report(*store.pause())
+            if action == "status":
+                return report(*store.read())
         with PublicationStore(path).locked() as publication:
             state = store.continue_paused()
             # A pause outlives the runtime that proved the reservation safe.
@@ -693,40 +698,43 @@ def _loop(identifier, *, action, agent_kind, model, mode, max_reviews, max_passe
     if options.model is None or options.mode is None:
         raise TaskError("Loop reviewer requires explicit model and mode ([reviewer] or --r-model/--r-mode)")
     adapter_for(options).check_available()
-    initial_options = None
-    if reservation:
-        initial_options = AgentOptions(**reservation["implementation_options"])
-        if any(v is not None and v != getattr(initial_options, k) for k, v in
-               zip(("kind", "model", "mode"), implementation_overrides)):
-            raise TaskError("Aborted reservation retains its original implementation settings")
-    elif env.workspace is None:
-        initial_options = resolve_agent_options(env.local.agent, AgentOverrides(*implementation_overrides),
-                                                agent_flag="--i-agent")
-        if initial_options.model is None or initial_options.mode is None:
-            raise TaskError("Loop implementation requires explicit model and mode ([agent] or --i-model/--i-mode)")
-        bootstrap(env, initial_options, global_settings)
-    elif any(v is not None for v in implementation_overrides):
-        raise TaskError("--i-* options require a from-scratch loop; existing implementation settings are preserved")
-    with PublicationStore(env.workspace.path).locked() as publication:
-        store = LoopStore(env.workspace.path)
-        if action == "new" and store.path.exists():
-            previous, _ = store.read()
-            if previous["status"] == "aborting":
-                raise TaskError("Abort reconciliation is pending; rerun --abort before --new")
-            if previous["status"] == "aborted" and initial_options is None:
-                implementation_target(env, previous["implementation"])
-            if previous["status"] == "aborted" and from_review:
-                if not previous["abandonment"]["review_ready"]:
-                    raise TaskError("Implementation was interrupted; inspect and use --new without --from-review "
-                                    "to explicitly continue implementation first")
-                if (task_binding(env) != previous["binding"]
-                        or requirements(env) != previous["requirements"]
-                        or snapshot(env.workspace.path, env.base, env.workspace.branch).as_dict() != previous["snapshot"]):
-                    raise TaskError("Completed implementation boundary changed since abort; continue implementation "
-                                    "with --new before requesting review")
-        state = new_state(env, options, max_reviews, max_passes, timeout, from_review=from_review,
-                          initial_options=initial_options,
-                          reserved_implementation=reservation["implementation"]["context_id"] if reservation else None)
-        store.create(state, replace=action == "new")
-        return drive(store, state, LoopRuntime(identifier, publication, startup_recovery=bool(reservation)),
-                     on_pass_result=on_pass_result)
+    with ExitStack() as ownership:
+        initial_options = None
+        prepared = False
+        if reservation:
+            initial_options = AgentOptions(**reservation["implementation_options"])
+            if any(v is not None and v != getattr(initial_options, k) for k, v in
+                   zip(("kind", "model", "mode"), implementation_overrides)):
+                raise TaskError("Aborted reservation retains its original implementation settings")
+        elif env.workspace is None:
+            initial_options = resolve_agent_options(env.local.agent, AgentOverrides(*implementation_overrides),
+                                                    agent_flag="--i-agent")
+            if initial_options.model is None or initial_options.mode is None:
+                raise TaskError("Loop implementation requires explicit model and mode ([agent] or --i-model/--i-mode)")
+            bootstrap(env, initial_options, global_settings, ownership=ownership)
+            prepared = True
+        elif any(v is not None for v in implementation_overrides):
+            raise TaskError("--i-* options require a from-scratch loop; existing implementation settings are preserved")
+        with PublicationStore(env.workspace.path).locked(allow_owned=prepared) as publication:
+            store = LoopStore(env.workspace.path)
+            if action == "new" and store.path.exists():
+                previous, _ = store.read()
+                if previous["status"] == "aborting":
+                    raise TaskError("Abort reconciliation is pending; rerun --abort before --new")
+                if previous["status"] == "aborted" and initial_options is None:
+                    implementation_target(env, previous["implementation"])
+                if previous["status"] == "aborted" and from_review:
+                    if not previous["abandonment"]["review_ready"]:
+                        raise TaskError("Implementation was interrupted; inspect and use --new without --from-review "
+                                        "to explicitly continue implementation first")
+                    if (task_binding(env) != previous["binding"]
+                            or requirements(env) != previous["requirements"]
+                            or snapshot(env.workspace.path, env.base, env.workspace.branch).as_dict() != previous["snapshot"]):
+                        raise TaskError("Completed implementation boundary changed since abort; continue implementation "
+                                        "with --new before requesting review")
+            state = new_state(env, options, max_reviews, max_passes, timeout, from_review=from_review,
+                              initial_options=initial_options,
+                              reserved_implementation=reservation["implementation"]["context_id"] if reservation else None)
+            store.create(state, replace=action == "new")
+            return drive(store, state, LoopRuntime(identifier, publication, startup_recovery=bool(reservation)),
+                         on_pass_result=on_pass_result)
