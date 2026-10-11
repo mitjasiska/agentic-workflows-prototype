@@ -24,7 +24,7 @@ from .publication_state import PublicationStore, prepare_review_continuation
 from .preparation import check_issue_structure, prepare_task
 from .review import resolve_review_workspace, resolve_reviewer, review_pass, accept_review
 from .review_result import parse_verdict, publication_fingerprint
-from .pass_delivery import PassDelivery, dispose, object_digest
+from .pass_delivery import PassDelivery, dispose, object_digest, pass_timing
 from .review_state import snapshot
 from .workspace import Git, Herdr
 from .cleanup import disposed_context_history
@@ -135,6 +135,10 @@ class LoopResult:
             lines.append(f"Next boundary: {value['next_phase']}")
         if value["pause_requested"]:
             lines.append("Pause-after-current requested (sticky).")
+        if value.get("pass_timing"):
+            timing = value["pass_timing"]
+            lines.append(f"Pass warning threshold: {timing['threshold_seconds']:g}s "
+                         f"({'exceeded' if timing['overdue'] else 'not yet exceeded'}; advisory only).")
         if value.get("abandonment"):
             claim = value["abandonment"]["claim"]
             lines.append(f"Abandoned: {claim['phase']} / {claim['context_id']} / {claim['pass_id']}")
@@ -166,6 +170,7 @@ def report(state, pause=False):
         final_review_state=reviews[-1]["state"] if reviews else "not_run",
         human_action_required=state["status"] != "clean", next_phase=state["next_phase"],
         pause_requested=pause, active_pass=state["active_pass"], abandonment=state.get("abandonment"),
+        pass_timing=pass_timing(state),
         implementation_session=state["implementation"].get("session") if state.get("abandonment") else None))
 
 
@@ -348,6 +353,7 @@ class LoopRuntime:
         else:
             implementation_target(env, state["implementation"])
         while True:
+            delivery.warn_if_overdue()
             if value["review"] is not None:
                 delivery.snapshot()
             try:
@@ -369,10 +375,7 @@ class LoopRuntime:
                     raise TaskError("Checkout changed during review recovery; retained pass is invalidated")
                 if raw is not None:
                     break
-            if time.time() >= value["deadline"]:
-                raise TaskError("Original pass deadline expired without proven completion; inspect its retained output/context; "
-                                "timeout cannot be reset by restarting")
-            time.sleep(min(0.25, max(0, value["deadline"] - time.time())))
+            time.sleep(0.25)
         # Observe identity again after the provider read and Git seal check.
         try:
             delivery.runtime()

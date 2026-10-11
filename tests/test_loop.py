@@ -8,6 +8,8 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -678,15 +680,19 @@ class LoopIntegrationTests(unittest.TestCase):
         self.assertEqual(len(self.registry.list()), 2)
         self.assertEqual((len(self.impl_prompts), len(self.prompts)), (1, 1))
 
-    def test_implementation_result_failure_or_missing_output_never_launches_review(self):
+    def test_missing_implementation_output_waits_until_controller_interruption(self):
         self.impl_raw = "missing"
-        result = self.run_loop()
-        self.assertEqual(result.state, "escalated")
-        self.assertIn("Timed out", result.data["reason"])
+        def stopped_wait(seconds):
+            raise KeyboardInterrupt()
+        with patch("task_start.implementation_pass.time",
+                   SimpleNamespace(monotonic=time.monotonic, sleep=stopped_wait)):
+            result = self.run_loop()
+        self.assertEqual(result.state, "interrupted")
+        self.assertIn("original agent may still be working", result.data["reason"])
         self.assertEqual(self.prompts, [])
         self.assertIsNotNone(result.data["active_pass"])
         metric, = MetricsStore(self.registry.path).read()
-        self.assertEqual((metric["status"], metric["loop_status"]), ("timed_out", "escalated"))
+        self.assertEqual((metric["status"], metric["loop_status"]), ("interrupted", "interrupted"))
 
     def test_failed_checks_cannot_claim_implementation_completion(self):
         self.impl_overrides = dict(checks=[dict(name="unit", result="failed", details="Failure")])

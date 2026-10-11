@@ -63,7 +63,7 @@ class LocalConfig:
     review_validation: ReviewValidationConfig = field(default_factory=ReviewValidationConfig)
     task_assessment: TaskAssessmentConfig = field(default_factory=TaskAssessmentConfig)
     implementation_scope: ImplementationScopeConfig = field(default_factory=ImplementationScopeConfig)
-    loop_timeout: float = 1800
+    loop_timeout: float = 7200
 
 
 def read_toml(path: Path) -> dict:
@@ -102,7 +102,7 @@ def load_local(path: Path | None = None, *, no_agent: bool = False) -> LocalConf
         agent = None if no_agent else agent_config(data.get("agent"), partial=True)
         profiles = {} if no_agent else codex_repository_profiles(data.get("codex"))
         reviewer = None if no_agent else agent_config(data.get("reviewer"), partial=True)
-        timeout = 1800 if no_agent else loop_config(data.get("loop", {}))
+        timeout = 7200 if no_agent else loop_config(data.get("loop", {}))
         return LocalConfig(root.resolve(), api_key, agent, profiles, reviewer, structure, validation, assessment, scope, timeout)
     except (OSError, ValueError, RuntimeError):
         raise TaskError("projects_root could not be resolved") from None
@@ -181,7 +181,7 @@ def agent_config(data: dict | None, *, partial: bool = False) -> AgentConfig | N
     return AgentConfig(kind, model, mode)
 
 
-def loop_config(data: dict, default: float = 1800) -> float:
+def loop_config(data: dict, default: float = 7200) -> float:
     if not isinstance(data, dict) or set(data) - {"timeout"}:
         raise TaskError("loop must be a table supporting only timeout")
     timeout = data.get("timeout", default)

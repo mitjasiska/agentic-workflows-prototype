@@ -7,6 +7,7 @@ import io
 import json
 import re
 import threading
+import time
 from types import SimpleNamespace
 from pathlib import Path
 import unittest
@@ -1134,12 +1135,24 @@ class BootstrapLoopTests(unittest.TestCase):
         transport.assert_effects(1, 1)
         self.assertEqual(self.store.read()[0]['implementation']['session']['value'], transport.thread_id)
 
-    def test_initial_timeout_budget_starts_after_bounded_startup(self):
+    def test_initial_warning_starts_after_bounded_startup_and_keeps_waiting(self):
         transport = self.codex_transport()
-        result = loop('DEV-7', timeout=0.5)
-        self.assertEqual(result.state, 'escalated', result.render())
-        self.assertIn('Timed out waiting for validated implementation', result.data['reason'])
-        self.assertEqual(transport.now, transport.queued_at + transport.receipt_delay + 0.5)
+        polls = []
+        def wait(seconds):
+            polls.append(transport.now)
+            if transport.now >= transport.queued_at + transport.receipt_delay + 1:
+                raise KeyboardInterrupt()
+            transport.advance(seconds)
+        with patch('task_start.pass_delivery.time', SimpleNamespace(time=lambda: 2000000000 + transport.now)), \
+                patch('task_start.implementation_pass.time',
+                      SimpleNamespace(monotonic=lambda: transport.now, sleep=wait)), \
+                patch('sys.stderr', new_callable=io.StringIO) as warning:
+            result = loop('DEV-7', timeout=0.5)
+        self.assertEqual(result.state, 'interrupted', result.render())
+        self.assertEqual(polls[0], transport.queued_at + transport.receipt_delay)
+        self.assertEqual(transport.now, transport.queued_at + transport.receipt_delay + 1)
+        self.assertEqual(warning.getvalue().count('warning threshold'), 1)
+        self.assertEqual(self.store.read()[0]['delivery']['deadline'], 2000000000 + polls[0] + 0.5)
         self.assertEqual((result.data['passes'], result.data['reviews']), (1, 0))
         transport.assert_effects(1, 1)
         self.assertEqual(self.prompts, [])
@@ -1214,7 +1227,13 @@ class BootstrapLoopTests(unittest.TestCase):
         self.assertEqual(state['implementation']['session']['value'], transport.thread_id)
         self.assertEqual(self.registry.get('DEV-7-I1')['state'], 'uncertain')
         self.assertEqual(self.prompts, [])
-        self.assertEqual(loop('DEV-7').state, 'escalated')
+        def stopped_wait(seconds):
+            raise KeyboardInterrupt()
+        with patch('task_start.loop.time', SimpleNamespace(sleep=stopped_wait)):
+            recovered = loop('DEV-7')
+        self.assertEqual(recovered.state, 'interrupted', recovered.render())
+        self.assertEqual(self.store.read()[0]['active_pass'], state['active_pass'])
+        self.assertEqual(self.store.read()[0]['delivery'], state['delivery'])
         for kwargs in (dict(action='continue'), dict(action='new')):
             with self.assertRaises(TaskError):
                 loop('DEV-7', **kwargs)
@@ -1466,21 +1485,30 @@ class BootstrapLoopTests(unittest.TestCase):
                         case.doCleanups()
 
     def test_initial_outcomes_fail_closed_without_review(self):
-        for outcome in ('blocked', 'failed', 'malformed', 'timeout', 'failed_check', 'busy'):
+        for outcome in ('blocked', 'failed', 'malformed', 'missing', 'failed_check', 'busy'):
             with self.subTest(outcome=outcome):
                 case = BootstrapLoopTests()
                 case.setUp()
+                # Outcome/status comparisons inspect the same moment; advisory
+                # timing transitions are covered by the threshold regressions.
+                case.enterContext(patch('task_start.pass_delivery.time',
+                                        SimpleNamespace(time=lambda: 2000000000.0)))
                 try:
                     if outcome in ('blocked', 'failed'):
                         case.impl_overrides = dict(state=outcome)
-                    elif outcome in ('malformed', 'timeout'):
+                    elif outcome in ('malformed', 'missing'):
                         case.impl_raw = '{}' if outcome == 'malformed' else 'missing'
                     elif outcome == 'busy':
                         case.impl_status = 'working'
                     else:
                         case.impl_overrides = dict(checks=[dict(name='tests', result='failed', details='failure')])
-                    result = case.run_loop()
-                    self.assertEqual(result.state, 'escalated', result.render())
+                    def stopped_wait(seconds):
+                        raise KeyboardInterrupt()
+                    with patch('task_start.implementation_pass.time',
+                               SimpleNamespace(monotonic=time.monotonic, sleep=stopped_wait)):
+                        result = case.run_loop()
+                    self.assertEqual(result.state, 'interrupted' if outcome in ('missing', 'busy') else 'escalated',
+                                     result.render())
                     self.assertEqual((result.data['passes'], result.data['reviews']), (1, 0))
                     self.assertEqual(case.prompts, [])
                     self.assertEqual(len(case.launches), 1)

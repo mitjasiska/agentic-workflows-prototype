@@ -28,6 +28,15 @@ LIMIT = 1024 * 1024
 FILES = {"result.json", "completion.json", "complete.py"}
 
 
+def pass_timing(state):
+    """Read-only advisory timing, including unchanged legacy hard deadlines."""
+    value = state.get("delivery")
+    if not state["active_pass"] or not value or not value["receipt"]:
+        return None
+    return dict(threshold_seconds=state["timeout"], warning_at=value["deadline"],
+                overdue=time.time() >= value["deadline"])
+
+
 def digest(raw):
     return hashlib.sha256(raw).hexdigest()
 
@@ -178,6 +187,7 @@ def dispose(value):
 class PassDelivery:
     def __init__(self, state, persist, env):
         self.state, self.persist, self.env = state, persist, env
+        self.warned = False
 
     @property
     def evidence(self):
@@ -224,9 +234,30 @@ class PassDelivery:
 
     def started(self):
         # Only the delivering owner calls this after bounded startup/receipt.
-        # Restart observations never extend the original collection deadline.
+        # Restart observations never move the original warning timestamp.
         self.evidence["deadline"] = time.time() + self.state["timeout"]
         self.persist(self.state["active_pass"]["context_id"], self.evidence["pass_id"])
+
+    def warn_if_overdue(self):
+        if self.warned:
+            return
+        timing = pass_timing(self.state)
+        if timing is None or not timing["overdue"]:
+            return
+        self.warned = True  # One notice per pass in this controller invocation.
+        value = self.evidence
+        elapsed = time.time() - (value["deadline"] - self.state["timeout"])
+        issue = self.state["binding"]["issue"]
+        print(f"Info: {issue} {value['phase']} pass {value['pass_id']} "
+              f"({self.state['active_pass']['context_id']}): elapsed {elapsed:.0f}s; "
+              f"warning threshold {self.state['timeout']:g}s exceeded. "
+              "Still observing the original agent turn; verified completion remains pending. "
+              f"Leave it working, inspect task loop {issue} --status [--json], or request "
+              f"task loop {issue} --pause-after-current in another terminal. "
+              "Ctrl+C stops this waiting controller, not necessarily the agent turn. "
+              "To stop/abandon work, explicitly quit task agents, then use "
+              f"task loop {issue} --abort or task cleanup {issue} --force from outside the checkout "
+              "(cleanup discards work).", file=sys.stderr, flush=True)
 
     def contexts_digest(self):
         return object_digest(sorted(c["context_id"] for c in
@@ -296,12 +327,14 @@ class PassDelivery:
         raw = read_private(path / "result.json")
         proof_raw = read_private(path / "completion.json", 16384)
         try:
+            # The saved deadline is advisory, including for legacy seals. Keep
+            # the actual completion timestamp and every identity/integrity check.
             proof = json.loads(proof_raw, object_pairs_hook=unique_object)
             if (set(proof) != {"run_id", "pass_id", "result_sha256", "snapshot", "completed_at"}
                     or proof["run_id"] != value["run_id"] or proof["pass_id"] != value["pass_id"]
                     or proof["result_sha256"] != digest(raw)
                     or type(proof["completed_at"]) not in (int, float)
-                    or not 0 < proof["completed_at"] <= value["deadline"]):
+                    or not 0 < proof["completed_at"] < float("inf")):
                 raise ValueError("different completion")
         except (KeyError, TypeError, ValueError, UnicodeError):
             raise TaskError("Retained completion seal is invalid or conflicts with result bytes") from None

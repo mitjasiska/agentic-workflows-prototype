@@ -118,13 +118,15 @@ model = "implementation-model" # kind/model/mode are independently optional
 [reviewer]
 mode = "high"                  # independent of implementation
 [loop]
-timeout = 1800                  # seconds per loop pass, > 0 and <= 86400
+timeout = 7200                  # warning threshold per loop pass, > 0 and <= 86400
 ```
 
 Both roles accept `kind`, `model`, and `mode`, matching the global schema;
 `reasoning` remains a legacy alias for `mode`, and both cannot occur in one table.
-`[loop] timeout` is also allowed globally. It affects `task loop` only; standalone
-review/integration timeouts retain their command defaults.
+`[loop] timeout` is also allowed globally. The default is 7200 seconds (two hours)
+per delivered pass. It is an advisory warning threshold: the controller keeps
+observing the original agent after warning. `task loop --timeout SECONDS` overrides
+it for a new loop. Standalone review/integration timeouts retain their command defaults.
 
 Fields resolve independently: **CLI → project local → project shared → global →
 existing built-in behavior**. An absent file, table, or field inherits. An empty
@@ -152,7 +154,7 @@ also applies to workspace-only start so a newly tracked local override cannot be
 copied into a task checkout.
 
 The active loop checkpoint pins resolved implementation/reviewer selections and
-its timeout. Interrupt recovery, continuation, fixes, and re-review retain them;
+its warning threshold. Interrupt recovery, continuation, fixes, and re-review retain them;
 same-reviewer standalone resume also retains its context settings. Editing project
 files in either checkout does not hot-reload an active execution. Existing CLI
 conflict checks on recovery remain in force. Workspace-only start validates project

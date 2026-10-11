@@ -333,7 +333,9 @@ def review_pass(issue, project, repo, registry, identities, workspace, anchor, b
                 if delivery:
                     delivery.started()
                 deadline = time.monotonic() + timeout
-                while time.monotonic() < deadline:
+                while delivery or time.monotonic() < deadline:
+                    if delivery:
+                        delivery.warn_if_overdue()
                     checkpoint()
                     try:
                         # A pane ID is a location. Reconcile the same terminal before
@@ -382,7 +384,8 @@ def review_pass(issue, project, repo, registry, identities, workspace, anchor, b
                     # Herdr may infer idle from process/title detection even while Pi
                     # is working. No result means pending, regardless of an earlier
                     # working observation or elapsed startup time. The explicit
-                    # workflow deadline still bounds absent/ambiguous observations.
+                    # standalone review deadline still bounds these observations;
+                    # loop delivery uses an advisory warning and keeps observing.
                     time.sleep(0.25)
                 else:
                     metric.outcome("timed_out")
