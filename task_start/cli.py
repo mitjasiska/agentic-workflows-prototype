@@ -69,7 +69,9 @@ def parser() -> argparse.ArgumentParser:
                     "controller interruption to observe its original pass without sending another prompt. "
                     "If an agent turn was interrupted, stop the waiting controller with Ctrl+C first. "
                     "For deliberate abandonment, quit task agents to their original shells, keep panes open, "
-                    "then run --abort outside the task checkout on Herdr's host.")
+                    "stop child/background jobs, then run --abort outside the task checkout on Herdr's Linux host. "
+                    "Abort verifies the registered execution, not machine-wide checkout non-use. "
+                    "Stop manually detached or external helpers before reuse.")
     loop_command.add_argument("issue", type=issue_identifier)
     controls = loop_command.add_mutually_exclusive_group()
     controls.add_argument("--pause-after-current", dest="action", action="store_const", const="pause",
@@ -81,7 +83,7 @@ def parser() -> argparse.ArgumentParser:
     controls.add_argument("--new", dest="action", action="store_const", const="new",
                           help="Explicitly replace a stopped loop after inspection, with a fresh reviewer")
     controls.add_argument("--abort", dest="action", action="store_const", const="abort",
-                          help="Abandon a proven stopped unfinished pass, preserving checkout and session history; Ctrl+C alone does not abort")
+                          help="Abandon an unfinished pass after Linux registered-execution checks, preserving checkout and session history; Ctrl+C alone does not abort")
     loop_command.set_defaults(action="run")
     loop_command.add_argument("--from-review", action="store_true",
                               help="Start a new loop with fresh review of the completed implementation")

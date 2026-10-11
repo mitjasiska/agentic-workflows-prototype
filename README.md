@@ -262,9 +262,10 @@ The current pass finishes; the next handoff waits for explicit `--continue`.
 `task loop DEV-7` reconciles it, while `--continue` remains exclusive to pauses.
 To deliberately abandon an interrupted pass, stop the waiting controller with
 Ctrl+C, quit task agents to their original shells while keeping panes open, then
-run `task loop DEV-7 --abort` from outside the checkout. It verifies stopped
-processes and preserves implementation files and session history. See the
-[abort sequence](docs/lifecycle.md#explicit-abort-without-discarding-work) for
+run `task loop DEV-7 --abort` from outside the checkout. On Linux V1 it verifies
+stopped registered executions and preserves implementation files and session
+history. Stop manually detached helpers before reuse; abort does not prove
+machine-wide checkout non-use. See the [abort sequence](docs/lifecycle.md#explicit-abort-without-discarding-work) for
 fresh review and incomplete-implementation continuation.
 Defaults are three reviews, six total passes,
 and 1800 seconds per delivered pass; use `--max-reviews`, `--max-passes`, and
