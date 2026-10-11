@@ -348,6 +348,24 @@ class AbandonmentTests(unittest.TestCase):
                 abandon.assert_not_called()
 
 
+    def test_valid_abandonment_waits_for_short_registry_transaction(self):
+        import threading
+        self.prepare_stale()
+        entered = threading.Event()
+        def observed_configuration():
+            entered.set()
+            return self.local
+        with patch("task_start.integrate.load_local", side_effect=observed_configuration), \
+                ThreadPoolExecutor(max_workers=1) as pool:
+            with ownership_gate(exclusive=True):
+                attempt = pool.submit(self.abandon)
+                self.assertTrue(entered.wait(5))
+                self.assertFalse(attempt.done())
+                self.assertEqual(self.integration_store.read()["state"], "uncertain")
+            self.assertIn("Abandoned DEV-7-G1", attempt.result(timeout=10))
+        self.assert_retained()
+
+
 class RecoveryContractTests(unittest.TestCase):
     def setUp(self):
         directory = self.enterContext(tempfile.TemporaryDirectory())
@@ -388,15 +406,6 @@ class RecoveryContractTests(unittest.TestCase):
                     self.assertRaisesRegex(TaskError, "exact integration context ID"):
                 abandon_integration("DEV-7", selector)
         self.assertFalse(self.registry_path.parent.exists(), "Invalid arguments must not create lock state")
-
-    def test_valid_abandonment_requires_ownership_before_loading_configuration(self):
-        with patch.dict(os.environ, {}, clear=True), ownership_gate(exclusive=True), \
-                patch("task_start.integrate.load_local", side_effect=AssertionError("No config")), \
-                ThreadPoolExecutor(max_workers=1) as pool:
-            attempt = pool.submit(abandon_integration, "DEV-7", "DEV-7-G1")
-            with self.assertRaisesRegex(TaskError, "ownership is busy"):
-                attempt.result()
-
 
 class LegacyReadinessProofTests(unittest.TestCase):
     def setUp(self):

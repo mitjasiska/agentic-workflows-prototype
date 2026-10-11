@@ -1,8 +1,14 @@
-"""Machine-local exclusion between workflow controllers and destructive disposal.
+"""Short machine-local ownership transactions, never agent-turn ownership.
 
-Shared holders may operate concurrently. Cleanup takes the exclusive side before
-reading ownership, and keeps it through retirement. Durable reservations still
-come from disposal journals, not this process-lifetime lock.
+Lock order: try the existing private Git publication lock without waiting, then
+(if needed) take the permanent checkout lock for shared Git administration.
+Only that repository lock may wait, and only outside the registry gate. Its
+holder never waits for a task lock. The gate then protects inventory/admission
+or a local topology change; SQLite write transactions come last. Selection may also try a resource lock under
+the gate, but must NEVER wait for it. This prevents an inverted-order deadlock.
+Release the gate before agent/provider waits or recursive filesystem deletion.
+A disposal publishes its durable reservation under the exclusive gate before
+releasing it; claim checks and writes share the gate as one transaction.
 """
 
 from contextlib import contextmanager
@@ -11,6 +17,7 @@ from inspect import signature
 import os
 from pathlib import Path
 import threading
+import time
 
 from . import TaskError
 
@@ -19,7 +26,7 @@ _held = threading.local()
 
 
 @contextmanager
-def ownership_gate(*, exclusive=False, registry=None):
+def ownership_gate(*, exclusive=False, registry=None, timeout=30):
     from .contexts import registry_path
     path = (Path(registry) if registry is not None else registry_path()).parent / "ownership.lock"
     path = path.absolute()
@@ -29,7 +36,7 @@ def ownership_gate(*, exclusive=False, registry=None):
         held = _held.locks = {}
     if key in held:
         if exclusive and not held[key]:
-            raise TaskError("Cannot begin disposal inside an active workflow controller")
+            raise TaskError("Cannot upgrade a shared registry transaction; release it before disposal admission")
         yield
         return
     fd = None
@@ -39,10 +46,17 @@ def ownership_gate(*, exclusive=False, registry=None):
             raise TaskError("Workflow ownership lock path is aliased")
         fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         import fcntl
-        try:
-            fcntl.flock(fd, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise TaskError("Workflow ownership is busy: another controller or cleanup is active; retry after it stops") from None
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(fd, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TaskError("Workflow registry is busy with a short ownership transaction; retry shortly. "
+                                    "If it persists, inspect the controller doing registry/Git administration; "
+                                    "do not delete locks, journals or context history") from None
+                time.sleep(0.01)
         held[key] = exclusive
         try:
             yield

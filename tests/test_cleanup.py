@@ -46,6 +46,9 @@ class CleanupTests(unittest.TestCase):
         self.linear = self.enterContext(patch("task_start.cli.Linear")).return_value
         self.linear.get_issue.return_value = self.issue
         self.workspace_id = None
+        self.pane_count = 0
+        self.enterContext(patch("task_start.cli.HerdrContexts.endpoint", return_value="/test.sock"))
+        self.enterContext(patch("task_start.cli.HerdrContexts.snapshot", return_value=[]))
         self.workspace_active = True
         self.workspace_path = self.path
         self.workspace_label = "Untrusted display label"
@@ -80,7 +83,7 @@ class CleanupTests(unittest.TestCase):
     def workspace_entry(self, workspace_id=None, path=None, label=None):
         return dict(workspace_id=workspace_id or self.workspace_id,
                     label=self.workspace_label if label is None else label,
-                    focused=False, pane_count=1, tab_count=1, active_tab_id="unused:t1",
+                    focused=False, pane_count=self.pane_count, tab_count=1, active_tab_id="unused:t1",
                     agent_status="idle", number=7,
                     worktree=dict(repo_root=str(self.repo), checkout_path=str(path or self.workspace_path),
                                   repo_key=str(self.repo / ".git"), repo_name=self.repo.name,
@@ -302,11 +305,13 @@ class CleanupTests(unittest.TestCase):
     def test_human_moved_terminal_is_not_retired_with_its_old_workspace(self):
         self.workspace_id = "w-task"
         registry = self.register_contexts()
-        self.context_snapshot.return_value = [dict(terminal_id="term-task", pane_id="w-other:p9")]
-        with self.assertRaisesRegex(TaskError, "possibly moved by a human"):
+        self.context_snapshot.return_value = [dict(terminal_id="term-task", pane_id="w-other:p9",
+                                                   workspace_id="w-other", cwd=str(self.path))]
+        with self.assertRaisesRegex(TaskError, "Task terminal moved"):
             cli.cleanup("DEV-7")
         self.assertEqual(len(registry.list()), 3)
-        self.assertTrue(self.git.retirement_file("DEV-7").exists())
+        self.assertTrue(self.path.exists())
+        self.assertFalse(self.git.retirement_file("DEV-7").exists())
         self.context_snapshot.return_value = []
         cli.cleanup("DEV-7")
         self.assertEqual(registry.list(), [])
@@ -343,19 +348,19 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(registry.list(), [])
         self.assertEqual(len(registry.list(include_retired=True)), 4)
 
-    def test_cleanup_without_pending_receipt_recovers_older_context_retirement(self):
+    def test_cleanup_without_open_workspace_retains_reservation_for_context_retirement(self):
         registry = self.register_contexts()
         self.older_context(registry)
         with patch("task_start.cli.retire_missing_contexts", side_effect=TaskError("interrupted")):
             with self.assertRaisesRegex(TaskError, "interrupted"):
                 cli.cleanup("DEV-7")
         self.assertFalse(self.path.exists())
-        self.assertFalse(self.git.retirement_file("DEV-7").exists())
+        self.assertTrue(self.git.retirement_file("DEV-7").exists())
         self.assertEqual(len(registry.list()), 4)
         cli.cleanup("DEV-7")
         self.assertEqual(registry.list(), [])
 
-    def test_older_context_scope_and_live_workspace_guards_survive_cleanup(self):
+    def test_foreign_context_claims_preserve_the_entire_cleanup_target(self):
         self.workspace_id = "w-task"
         registry = self.register_contexts()
         safe_to_retire = self.older_context(registry)
@@ -368,22 +373,24 @@ class CleanupTests(unittest.TestCase):
                               worktree=str(self.path), endpoint="/test.sock", workspace_id="w-previous"),
         }
         self.extra_workspaces = [self.workspace_entry("w-still-live", self.repo.parent / "unrelated")]
-        cli.cleanup("DEV-7")
-        self.assertEqual({c["context_id"] for c in registry.list()}, retained)
-        history = {c["context_id"]: c for c in registry.list(include_retired=True)}
-        self.assertEqual(history[safe_to_retire]["state"], "retired")
+        before = registry.list(include_retired=True)
+        self.assert_refused("New or changed task context")
+        self.assertEqual(registry.list(include_retired=True), before)
+        self.assertTrue({safe_to_retire, *retained}.issubset({c["context_id"] for c in registry.list()}))
 
-    def test_older_moved_terminal_retains_session_and_pending_cleanup_receipt(self):
+    def test_older_moved_terminal_preserves_workspace_and_all_sessions(self):
         self.workspace_id = "w-task"
         registry = self.register_contexts()
         older = self.older_context(registry)
-        self.context_snapshot.return_value = [dict(terminal_id="term-previous", pane_id="w-human:p9")]
-        with self.assertRaisesRegex(TaskError, "possibly moved by a human"):
+        self.context_snapshot.return_value = [dict(terminal_id="term-previous", pane_id="w-human:p9",
+                                                   workspace_id="w-human", cwd=str(self.path))]
+        with self.assertRaisesRegex(TaskError, "Task terminal moved"):
             cli.cleanup("DEV-7")
         remaining = registry.list()
-        self.assertEqual([c["context_id"] for c in remaining], [older])
-        self.assertEqual(remaining[0]["session_id"], "older-session")
-        self.assertTrue(self.git.retirement_file("DEV-7").exists())
+        self.assertEqual(len(remaining), 4)
+        self.assertEqual(registry.get(older)["session_id"], "older-session")
+        self.assertTrue(self.path.exists())
+        self.assertFalse(self.git.retirement_file("DEV-7").exists())
         self.context_snapshot.return_value = []
         cli.cleanup("DEV-7")
         self.assertEqual(registry.list(), [])
@@ -395,7 +402,9 @@ class CleanupTests(unittest.TestCase):
         self.context_snapshot.side_effect = [[], TaskError("snapshot unavailable")]
         with self.assertRaisesRegex(TaskError, "snapshot unavailable"):
             cli.cleanup("DEV-7")
-        self.assertEqual([c["context_id"] for c in registry.list()], [older])
+        self.assertEqual(len(registry.list()), 4)
+        self.assertEqual(registry.get(older)["session_id"], "older-session")
+        self.assertTrue(self.path.exists())
         self.assertTrue(self.git.retirement_file("DEV-7").exists())
         self.context_snapshot.side_effect = None
         cli.cleanup("DEV-7")
@@ -884,7 +893,9 @@ class CleanupTests(unittest.TestCase):
         self.assertIn(f"Removed worktree: {self.path}", str(caught.exception))
         self.assertNotIn("was not deleted", str(caught.exception))
         self.assertEqual(self.git.branches("DEV-7"), [])
-        self.assertIn("Nothing to clean up", cli.cleanup("DEV-7"))
+        self.assertTrue(self.git.retirement_file("DEV-7").exists())
+        self.assertIn("cleanup complete", cli.cleanup("DEV-7"))
+        self.assertFalse(self.git.retirement_file("DEV-7").exists())
 
 
 class SquashCleanupTests(unittest.TestCase):

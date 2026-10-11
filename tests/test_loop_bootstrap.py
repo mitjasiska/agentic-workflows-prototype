@@ -516,7 +516,7 @@ class BootstrapLoopTests(unittest.TestCase):
             first = executor.submit(loop, 'DEV-7')
             try:
                 self.assertTrue(entered.wait(10))
-                with self.assertRaisesRegex(TaskError, 'Another review or publication'):
+                with self.assertRaisesRegex(TaskError, 'Another controller'):
                     loop('DEV-7')
                 self.assertEqual(self.store.read(), before)
             finally:

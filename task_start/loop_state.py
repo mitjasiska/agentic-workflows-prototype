@@ -4,7 +4,7 @@ Short SQLite transactions serialize pause requests with handoff claims. The
 existing publication lock owns the controller; pause/status never take that lock.
 """
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import json
 import os
 from pathlib import Path
@@ -13,6 +13,7 @@ import sqlite3
 from uuid import UUID
 
 from . import TaskError
+from .ownership import ownership_gate
 from .review_result import unique_object
 from .sessions import has_immutable_identity
 from .task_assessment import validate_assessment
@@ -197,6 +198,20 @@ class LoopStore:
 
     @contextmanager
     def connection(self, *, write=False):
+        # Agent completion seals inspect checkpoints read-only, including in
+        # sandboxes without registry write access. Controllers gate selection;
+        # only checkpoint mutations need admission against disposal here.
+        with ownership_gate() if write else nullcontext():
+            if write and self.path.exists():
+                from .cleanup import check_unreserved
+                from .contexts import ContextRegistry
+                binding = self.read()[0]["binding"]
+                check_unreserved(ContextRegistry(), binding["repository"], binding["worktree"])
+            with self._connection(write=write) as db:
+                yield db
+
+    @contextmanager
+    def _connection(self, *, write=False):
         db = None
         try:
             if write:

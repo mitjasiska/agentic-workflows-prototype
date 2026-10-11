@@ -605,8 +605,8 @@ will never arrive. To deliberately abandon that pass:
 3. From outside the task checkout, on Herdr's host/PID namespace, run
    `task loop ISSUE --abort`. Inspect `task loop ISSUE --status --json` as needed.
 
-Abort uses the task lock and exclusive workflow ownership gate. Another active
-controller refuses it. It requires exact saved issue/checkout/branch, context,
+Abort uses the selected worktree lock. Another controller on that worktree
+refuses it; independent workspace loops may continue. It requires exact saved issue/checkout/branch, context,
 provider, pane and terminal identities; positive idle-shell executable, argv,
 TTY, PID/start-time and process-family evidence; and readable Linux `/proc`.
 For the trusted single-user **Linux V1 Developer Preview**, this proof covers the
@@ -1434,6 +1434,12 @@ GitHub state. Non-ancestor cleanup on other hosts is refused.
 
 ### Removal checks and Python caches
 
+Quit the selected agents before ordinary cleanup too. It uses the same Linux
+task-scoped process verification as forced cleanup, checks before deleting even
+allowlisted caches, and rechecks immediately before worktree removal. A completed
+Linear status or an idle agent display does not prove that its process stopped.
+Cleanup never automatically terminates agents.
+
 All removal preconditions are checked before deletion and checked again just
 before removal. Cleanup normally refuses dirty task worktrees (including
 untracked and ignored files), index flags that hide modifications, unfinished Git
@@ -1677,16 +1683,35 @@ merge result's reachability from the configured base. It does not require the
 now-unreferenced head object to survive Git garbage collection. Missing or changed
 PR evidence still refuses retirement.
 
-Cleanup takes an exclusive machine-local ownership lock beside the context
-registry. Workflow controllers, preparation, context mutations and integration
-provenance writes take its shared side. Other controllers may run concurrently,
-but cleanup refuses while a controller holds the gate; claim mutations refuse
-while cleanup owns it. Locks release on controller exit. Pending journals continue
-to reserve resources afterward: allocation, rebinding and provenance writes cannot
-acquire overlapping reservations. Context inspection remains read-only.
+Cleanup and abort can finish while an independent workspace's loop remains
+active, including separate worktrees in the same repository. A loop owns its
+selected worktree's existing review/publication lock for the agent turn; it does
+not hold the machine-wide registry gate. Cleanup holds that same worktree lock
+and the repository-local disposal lock that survives worktree removal.
 
-Cleanup also holds one disposal lock shared by all journals for the issue and the
-existing task publication lock while the task exists. It revalidates ownership,
+A **same-workspace conflict** names the owned checkout. Let that controller
+finish, or stop it with Ctrl+C before retrying. For abort or either cleanup path,
+also quit the selected agents to their original shells and satisfy the existing stopped
+process checks. Do not stop an unrelated loop. **Registry contention** waits up
+to 30 seconds for a short ownership transaction, then asks you to retry shortly;
+persistent contention calls for inspecting the controller doing registry/Git
+administration. Shared repository fetch/base updates and worktree removal also
+use bounded synchronization. Never delete lock files, journals, or context
+history to bypass either diagnostic.
+
+The global gate covers claim admission, inventory and local metadata changes.
+A forced disposal saves its durable reservation before releasing the admission
+gate; allocation, rebinding and provenance writes reject overlapping pending
+reservations even after interruption. Ordinary cleanup records its worktree,
+private Git directory and retained artifact claims even when no Herdr workspace
+is open. Both paths release the global gate before recursive worktree deletion;
+inventory uses the durable reservation while Git removes files and metadata.
+That reservation persists until retirement finishes. Other cleanup operations can
+proceed on disjoint resources. Locks release on process exit; context inspection
+remains read-only. This coordinates cooperating workflow commands and does not
+provide filesystem sandbox isolation from external processes.
+
+It revalidates ownership,
 paths/mounts and registered runtime immediately before destructive operations,
 and saves a durable claim before each step:
 

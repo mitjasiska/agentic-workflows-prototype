@@ -1,8 +1,8 @@
 """Explicit, non-destructive retirement of one stopped loop claim.
 
 No provider input, process termination, checkout mutation, or Linear/config lookup.
-The existing ownership gate excludes controllers while the task lock and durable
-abort journal serialize revocation, context reconciliation and checkpoint release.
+The task publication lock excludes conflicting controllers; its durable abort
+journal serializes revocation, context reconciliation and checkpoint release.
 """
 
 import copy
@@ -17,7 +17,6 @@ from .contexts import ContextRegistry, HerdrContexts, context_reference, now, re
 from .implementation_pass import binding
 from .integration_process import shell_executable, stopped_loop_execution
 from .integration_state import IntegrationStore
-from .ownership import ownership_operation
 from .pass_delivery import PassDelivery, object_digest
 from .publication_state import PublicationStore
 from .review import resolve_review_workspace
@@ -154,7 +153,6 @@ def verify_boundary(state, registry, identities, contexts, review_snapshot):
     return current, processes, references
 
 
-@ownership_operation(exclusive=True)
 def abort_loop(identifier):
     from .loop import control_store, report, LoopRuntime
     store, path = control_store(identifier)

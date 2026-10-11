@@ -11,7 +11,6 @@ from uuid import uuid4
 
 from . import TaskError
 from .metrics import observe_run
-from .ownership import ownership_operation
 from . import publish as publication
 from .agent import AgentExecution, AgentOptions, AgentOverrides, adapter_for, codex_repository_policy, resolve_agent_options
 from .config import (check_project_settings_unchanged, load_local, load_projects, project_settings,
@@ -299,14 +298,13 @@ def check_git_environment():
 def abandon_integration(identifier, context_id):
     """Explicitly abandon only an unproven, sessionless, stopped Codex attempt."""
     # Reject invalid inputs without creating lock state or loading configuration.
-    # All execution observation and mutation stays inside the ownership gate.
+    # Exact workspace selection and the publication lock guard execution work.
     if not re.fullmatch(re.escape(identifier) + r"-G[1-9][0-9]*", context_id):
         raise TaskError("--abandon requires this issue's exact integration context ID, such as DEV-30-G1")
     check_git_environment()
     return _abandon_integration(identifier, context_id)
 
 
-@ownership_operation
 def _abandon_integration(identifier, context_id):
     local = load_local()
     issue = Linear(local.api_key).get_issue(identifier)
@@ -369,7 +367,6 @@ def _abandon_integration(identifier, context_id):
                 f"Run task integrate {identifier} explicitly for a fresh attempt.")
 
 
-@ownership_operation
 def integrate(identifier, *, agent_kind=None, model=None, mode=None, timeout=1800):
     if timeout <= 0:
         raise TaskError("Integration timeout must be positive")

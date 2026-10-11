@@ -1,4 +1,5 @@
 import argparse
+from contextlib import ExitStack
 import json
 from pathlib import Path
 import re
@@ -6,8 +7,9 @@ import signal
 import sys
 
 from . import TaskError
+from .ownership import ownership_gate
+from .publication_state import PublicationStore
 from .metrics import observe_run
-from .ownership import ownership_operation
 from .agent import (AgentExecution, AgentOverrides, adapter_for,
                     codex_repository_policy, resolve_agent_options)
 from .config import (check_project_settings_unchanged, load_local, load_projects, project_settings,
@@ -39,14 +41,17 @@ def parser() -> argparse.ArgumentParser:
     add_agent_options(start, include_no_agent=True)
     cleanup_command = commands.add_parser("cleanup",
         help="Remove a completed task, or force local cleanup of an unpublished or proven merged execution",
-        description="Normally requires a completed issue and proven merge. --force instead authorizes destructive "
+        description="Normally requires a completed issue, proven merge and stopped selected agents. "
+                    "--force instead authorizes destructive "
                     "disposal of one never-published or proven merged local execution, including dirty task contents, "
                     "without changing its Linear status. Merged recovery can use exact Git/Herdr identity when "
                     "legacy scope metadata is absent. Use --branch to select one proven merged execution "
                     "when multiple default/sliced candidates exist. "
                     "Quit its agents first and run outside its checkouts; exact identity and stopped-process "
                     "proof for registered execution are required. Other executions retain their resource claims; "
-                    "unmanaged host references are outside the V1 guarantee. Rerun --force to finish a partial disposal.")
+                    "unmanaged host references are outside the V1 guarantee. Independent workspaces may keep running. "
+                    "A same-workspace controller must finish or stop; short registry contention can be retried. "
+                    "Rerun --force to finish a partial disposal.")
     cleanup_command.add_argument("issue", type=issue_identifier)
     cleanup_command.add_argument("--force", action="store_true",
         help="Discard one unpublished or proven merged local execution without changing Linear status, including dirty files and retained artifacts")
@@ -71,6 +76,7 @@ def parser() -> argparse.ArgumentParser:
                     "For deliberate abandonment, quit task agents to their original shells, keep panes open, "
                     "stop child/background jobs, then run --abort outside the task checkout on Herdr's Linux host. "
                     "Abort verifies the registered execution, not machine-wide checkout non-use. "
+                    "Independent workspaces can abort or clean up while this loop runs. "
                     "Stop manually detached or external helpers before reuse.")
     loop_command.add_argument("issue", type=issue_identifier)
     controls = loop_command.add_mutually_exclusive_group()
@@ -133,7 +139,6 @@ def parse_slice(value: str) -> str:
         raise argparse.ArgumentTypeError(str(error)) from None
 
 
-@ownership_operation
 def start(identifier: str, *, no_agent: bool = False, slice: str | None = None,
           agent_kind: str | None = None, model: str | None = None,
           mode: str | None = None) -> str:
@@ -160,26 +165,27 @@ def start(identifier: str, *, no_agent: bool = False, slice: str | None = None,
         options = resolve_agent_options(local.agent, overrides)
         agent = adapter_for(options)
         agent.check_available()
-    workspace = prepare_task(issue, project, linear, Git(repo), lambda: Herdr(repo), slice=slice,
-                             check_configuration=lambda: check_project_settings_unchanged(global_settings, repo, local))
-    if agent:
-        policy = (codex_repository_policy(local.codex_repository_profiles, project.repo_name)
-                  if options.kind == "codex" else {})
-        execution = AgentExecution(issue, repo, workspace, options,
-                                   implementation_handoff(issue, workspace, assessment=local.task_assessment,
-                                                          scope=local.implementation_scope), policy=policy)
-        with observe_run() as metric:
-            metric.start(ContextRegistry(), issue, options, "implementation")
-            launched = launch_registered(agent, execution)
-            metric.outcome("dispatched", context_id=getattr(launched, "context_id", None))
-            status = launched.summary
-    else:
-        status = "skipped (--no-agent)"
-    return (f"{issue.identifier}  {issue.title}\nRepo:   {repo}\nBranch: {workspace.branch}\n"
-            f"Worktree: {workspace.path}\nHerdr:  {workspace.action}\nLinear: In Progress\nAgent:  {status}")
+    with ExitStack() as ownership:
+        workspace = prepare_task(issue, project, linear, Git(repo), lambda: Herdr(repo), slice=slice,
+                                 check_configuration=lambda: check_project_settings_unchanged(global_settings, repo, local),
+                                 ownership=ownership)
+        if agent:
+            policy = (codex_repository_policy(local.codex_repository_profiles, project.repo_name)
+                      if options.kind == "codex" else {})
+            execution = AgentExecution(issue, repo, workspace, options,
+                                       implementation_handoff(issue, workspace, assessment=local.task_assessment,
+                                                              scope=local.implementation_scope), policy=policy)
+            with observe_run() as metric:
+                metric.start(ContextRegistry(), issue, options, "implementation")
+                launched = launch_registered(agent, execution)
+                metric.outcome("dispatched", context_id=getattr(launched, "context_id", None))
+                status = launched.summary
+        else:
+            status = "skipped (--no-agent)"
+        return (f"{issue.identifier}  {issue.title}\nRepo:   {repo}\nBranch: {workspace.branch}\n"
+                f"Worktree: {workspace.path}\nHerdr:  {workspace.action}\nLinear: In Progress\nAgent:  {status}")
 
 
-@ownership_operation(exclusive=True)
 def cleanup(identifier: str, *, force: bool = False, branch: str | None = None) -> str:
     if branch is not None and not force:
         raise TaskError("Cleanup --branch requires --force and a proven merged execution")
@@ -193,45 +199,93 @@ def cleanup(identifier: str, *, force: bool = False, branch: str | None = None) 
     if issue.state_type != "completed":
         raise TaskError(f"{identifier} is not completed (Linear status: {issue.state_name}); nothing was removed")
     git, herdr = Git(repo), Herdr(repo)
-    # Check, but never fetch or advance the base during cleanup.
     git.check_base(project.base_branch)
-    pending = git.load_retirement(issue.identifier, project.base_branch)
-    target = herdr.resolve_task(git, issue.identifier, include_remotes=False)
+    with ExitStack() as locks:
+        # The issue directory lock survives removal of the private Git directory.
+        from .cleanup import DisposalStore
+        locks.enter_context(DisposalStore(git, issue.identifier).locked())
+        with ownership_gate(exclusive=True):
+            ContextRegistry().remember_repository(repo)
+            pending = git.load_retirement(issue.identifier, project.base_branch)
+            target = herdr.resolve_task(git, issue.identifier, include_remotes=False)
+            if target is not None:
+                locks.enter_context(PublicationStore(target.path).locked())
+        return cleanup_completed(issue, project, repo, git, herdr, pending, target)
+
+
+def cleanup_completed(issue, project, repo, git, herdr, pending, target):
     if target is None:
         if pending is None:
             pending = herdr.stale_retirement(git, issue.identifier, project.base_branch)
             if pending is not None:
-                git.save_retirement(pending)
+                with ownership_gate(exclusive=True):
+                    ContextRegistry().remember_repository(repo)
+                    git.save_retirement(pending)
         if pending is not None:
             try:
-                retired = herdr.retire(git, pending)
+                if pending.workspace_id is not None:
+                    retired = herdr.retire(git, pending)
+                else:
+                    herdr.revalidate_retirement(git, pending)
+                    retired = False
             except TaskError as error:
                 raise TaskError(f"Git cleanup is already complete, but Herdr workspace "
                                 f"{pending.workspace_id!r} could not be confirmed retired: {error}. "
                                 f"Rerun task cleanup {issue.identifier} after resolving the Herdr problem") from None
-            retire_contexts(issue.identifier, repo, pending.path, pending.workspace_id)
-            retire_missing_contexts(issue.identifier, repo, herdr, pending.path)
-            git.clear_retirement(pending)
+            with ownership_gate(exclusive=True):
+                retire_contexts(issue.identifier, repo, pending.path, pending.workspace_id)
+                retire_missing_contexts(issue.identifier, repo, herdr, pending.path)
+                git.clear_retirement(pending)
             status = (f"Retired Herdr workspace: {pending.workspace_id}" if retired else
-                      f"Herdr workspace already absent: {pending.workspace_id}")
+                      f"Herdr workspace already absent: {pending.workspace_id}" if pending.workspace_id else
+                      "No open Herdr workspace was registered")
             return (f"{issue.identifier}: cleanup complete\nRepo: {repo}\n"
                     "Git worktree and local branch were already removed\n" + status)
         retire_missing_contexts(issue.identifier, repo, herdr)
         return (f"{issue.identifier}: no local task branch or registered Herdr worktree remains in {repo}. "
                 "Nothing to clean up.")
-    git.discard_cleanup_artifacts(project.base_branch, target, issue.identifier)
+    from .cleanup import check_normal_ownership, normal_stopped, removal_retirement
+    registry = ContextRegistry()
+    endpoint = None
+    if target.open_workspace_id is not None and any(
+            c["workspace_id"] == target.open_workspace_id for c in registry.list()):
+        endpoint = HerdrContexts().endpoint()
+    def check_claims():
+        return check_normal_ownership(issue.identifier, repo, target, registry, endpoint=endpoint)
+    record = None
+    identities = HerdrContexts()
+    def stopped():
+        return normal_stopped(record, herdr, identities, project.base_branch, target.branch)
+    git.check_cleanup_target(project.base_branch, target, issue.identifier, require_clean=False)
+    record = check_claims()
+    observed = None
+    def verify_stopped():
+        nonlocal observed
+        current = stopped()
+        if observed is not None and current != observed:
+            raise TaskError("Selected execution runtime changed before cleanup; stop its agents and retry")
+        observed = current
+    git.discard_cleanup_artifacts(project.base_branch, target, issue.identifier, before_discard=verify_stopped)
     snapshot = git.check_cleanup(project.base_branch, target, issue.identifier)
+    verify_stopped()
     if herdr.resolve_task(git, issue.identifier, include_remotes=False) != target:
         raise TaskError("Git/Herdr cleanup target changed during validation; nothing was removed")
     retirement = herdr.retirement(target, issue.identifier, project.base_branch)
-    if pending is not None and retirement != pending:
+    if pending is not None and (pending.identifier, pending.base, pending.branch, pending.path, pending.workspace_id) != (
+            issue.identifier, project.base_branch, target.branch, target.path, target.open_workspace_id):
         raise TaskError("Pending Herdr retirement state does not match the exact current task workspace; "
                         "nothing was removed")
-    if retirement is not None:
-        git.save_retirement(retirement)
+    reservation = removal_retirement(target, issue.identifier, project.base_branch)
+    def admit_removal():
+        check_claims()
+        ContextRegistry().remember_repository(repo)
+        git.save_retirement(reservation)
     if herdr.resolve_task(git, issue.identifier, include_remotes=False) != target:
         raise TaskError("Git/Herdr cleanup target changed before removal; nothing was removed")
-    git.remove_task(project.base_branch, target, issue.identifier, snapshot)
+    # Every removal retains a durable resource reservation through retirement.
+    # Recursive deletion and Herdr closure must not retain the global gate.
+    git.remove_task(project.base_branch, target, issue.identifier, snapshot,
+                    before_remove=admit_removal, before_delete=verify_stopped)
     herdr_status = "No open Herdr workspace was registered"
     if retirement is not None:
         try:
@@ -241,13 +295,16 @@ def cleanup(identifier: str, *, force: bool = False, branch: str | None = None) 
                             f"Removed local branch: {target.branch}. Herdr workspace "
                             f"{retirement.workspace_id!r} could not be confirmed retired: {error}. "
                             f"Rerun task cleanup {issue.identifier} to finish retirement") from None
-        retire_contexts(issue.identifier, repo, retirement.path, retirement.workspace_id)
-        retire_missing_contexts(issue.identifier, repo, herdr, target.path)
-        git.clear_retirement(retirement)
+        with ownership_gate(exclusive=True):
+            retire_contexts(issue.identifier, repo, retirement.path, retirement.workspace_id)
+            retire_missing_contexts(issue.identifier, repo, herdr, target.path)
+            git.clear_retirement(reservation)
         herdr_status = (f"Retired Herdr workspace: {retirement.workspace_id}" if retired else
                         f"Herdr workspace already absent: {retirement.workspace_id}")
     else:
         retire_missing_contexts(issue.identifier, repo, herdr, target.path)
+        with ownership_gate(exclusive=True):
+            git.clear_retirement(reservation)
     return (f"{issue.identifier}: cleanup complete\nRepo: {repo}\n"
             f"Removed worktree: {target.path}\nRemoved local branch: {target.branch}\n{herdr_status}")
 

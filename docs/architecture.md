@@ -301,13 +301,41 @@ retained history and current/archived provenance to distinguish claimed resource
 pending disposal reservations and released history. Private Git metadata and
 foreign pending journals participate in overlap checks.
 
-[`ownership.py`](../task_start/ownership.py) supplies a shared/exclusive machine-local
-OS lock beside the registry. Controllers and claim mutations share it; cleanup
-holds it exclusively through final retirement. Loop argument validation precedes
-lock acquisition; valid loop operations, including checkpoint controls, remain
-guarded before reading workflow state. Context admission and provenance
-writes also reject durable pending reservations after a crashed cleanup releases
-its OS lock. This is a cooperating-workflow ownership boundary, not a host-wide
+[`ownership.py`](../task_start/ownership.py) supplies a short shared/exclusive
+OS gate beside the registry. Agent turns hold only the selected worktree's
+existing review/publication lock. Abort and both cleanup paths use that same
+lock; lock identity includes the exact Git directory and checkout identity,
+not just an issue number. A second controller for that worktree refuses.
+
+Lock order is task/disposal locks (nonblocking), then the permanent checkout's
+publication lock when shared Git administration is needed, then the registry
+gate, then SQLite writes. Selection may try a task lock under the gate, but must
+never wait for one. Repository administration may wait only outside the gate and
+never waits for a task lock. Fetch/base update and local removal use this shared
+repository lock, without holding it across agent turns. The gate permits bounded
+waiting for short registry transactions, inventory snapshots, Herdr allocation,
+and Git allocation changes; it never encloses an agent turn, remote cleanup
+proof, or recursive worktree deletion. Existing task selection is locked before
+fetch/base update, so a conflicting start cannot first advance the shared base.
+SQLite continues to serialize context ordinals and compare-and-set writes.
+Registry schema v3 also remembers repositories admitted for cleanup, so journals
+for workspaces without agent contexts remain discoverable across projects and
+after worktree removal. This stores repository locations, not duplicate claims;
+older context rows and ordinals remain intact.
+
+Forced cleanup rechecks all resource claims and fsyncs its reservation under one
+exclusive admission transaction. Once that gate is released, its pending journal
+continues to exclude overlapping context/provenance claims, including after a
+crash. Ordinary cleanup fsyncs its exact worktree, private Git directory and
+retained artifact claims before removal, even without an open Herdr workspace,
+and retains that reservation until context retirement. Inventory uses these
+reservations instead of reading metadata that Git may be deleting. Both cleanup
+paths apply the existing task-scoped Linux stopped-process proof before removal.
+Claim allocation also tries the selected checkout and exact
+Herdr binding's existing worktree locks. Cleanup's repository-local disposal lock
+survives removal of the worktree lock file. Checkpoint controls use short gate/
+SQLite transactions, so pause and status remain available during an agent turn.
+This is a cooperating-workflow ownership boundary, not a host-wide
 process/reference lease. Process checks cover registered shells and their families;
 filesystem checks prevent deletion across nested mount or symlink boundaries.
 Pending disposal gates

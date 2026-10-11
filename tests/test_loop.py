@@ -828,7 +828,7 @@ class LoopIntegrationTests(unittest.TestCase):
         self.on_implementation = lambda *_: self.pause()
         self.run_loop()
         with PublicationStore(self.path).locked():
-            with self.assertRaisesRegex(TaskError, "Another review"):
+            with self.assertRaisesRegex(TaskError, "Another controller"):
                 self.continue_loop()
             self.assertEqual(self.pause().state, "paused")
 
@@ -836,7 +836,9 @@ class LoopIntegrationTests(unittest.TestCase):
         def pause(*_):
             result = subprocess.run([sys.executable, "-c",
                 "from pathlib import Path; from task_start.loop_state import LoopStore; "
-                "import sys; print(LoopStore(Path(sys.argv[1])).pause()[0]['status'])", str(self.path)],
+                "import sys; import task_start.contexts as contexts; "
+                "contexts.registry_path = lambda: Path(sys.argv[2]); "
+                "print(LoopStore(Path(sys.argv[1])).pause()[0]['status'])", str(self.path), str(self.registry.path)],
                 capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), "running")

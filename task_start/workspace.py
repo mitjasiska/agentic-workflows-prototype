@@ -6,12 +6,15 @@ import re
 import shlex
 import stat
 import subprocess
+import tempfile
 import unicodedata
 from uuid import UUID
 
 from . import AgentNotReady, HerdrResponseError, TaskError
 from .github import MergedPull, check_history, merged_pull, repository_name
 from .review_result import unique_object
+
+_UNSELECTED = object()
 
 
 def branch_name(identifier: str, title: str) -> str:
@@ -62,7 +65,9 @@ class HerdrRetirement:
     base: str
     branch: str
     path: Path
-    workspace_id: str
+    workspace_id: str | None
+    git_dir: Path | None = None
+    claims: tuple[str, ...] = ()
 
 
 def run(args: list[str], *, input: bytes | None = None, env: dict[str, str] | None = None,
@@ -139,6 +144,11 @@ class Git:
                 raise TaskError("Permanent checkout has an unfinished Git operation; finish it first")
 
     def update_base(self, base: str) -> None:
+        from .publication_state import PublicationStore
+        with PublicationStore(self.repo).repository_locked():
+            self._update_base(base)
+
+    def _update_base(self, base: str) -> None:
         self.check_base(base)
         remote = self.command("config", "--default", "", "--get", f"branch.{base}.remote").strip()
         upstream = self.command("config", "--default", "", "--get", f"branch.{base}.merge").strip()
@@ -338,11 +348,11 @@ class Git:
         if require_clean:
             self.check_task_clean(path, git_dir)
 
-    def discard_cleanup_artifacts(self, base: str, target: TaskWorktree, identifier: str) -> bool:
+    def discard_cleanup_artifacts(self, base: str, target: TaskWorktree, identifier: str, *, before_discard=None) -> bool:
         """Remove only a complete, positively classified Python cache dirty state."""
         self.check_cleanup_target(base, target, identifier, require_clean=False)
         git_dir = Path(Git(target.path).command("rev-parse", "--absolute-git-dir").strip()).resolve()
-        removed = self.check_task_clean(target.path, git_dir, discard_disposable=True)
+        removed = self.check_task_clean(target.path, git_dir, discard_disposable=True, before_discard=before_discard)
         # Re-run the complete target validation after the only permitted
         # mutation. New or changed content must block worktree removal.
         self.check_cleanup_target(base, target, identifier)
@@ -358,7 +368,7 @@ class Git:
             raise TaskError("Cannot bind safe branch deletion to the permanent base checkout; nothing was removed")
         return state
 
-    def check_task_clean(self, path: Path, git_dir: Path, *, discard_disposable: bool = False) -> bool:
+    def check_task_clean(self, path: Path, git_dir: Path, *, discard_disposable: bool = False, before_discard=None) -> bool:
         checkout = Git(path)
         hidden_index_state = any(entry and (entry[0].islower() or entry[0] == "S")
                                  for entry in checkout.command("ls-files", "-v", "-z").split("\0"))
@@ -384,13 +394,13 @@ class Git:
             raise TaskError("Task worktree contains submodules; inspect it manually; nothing was removed")
         if not status_output:
             return False
-        if discard_disposable and self._discard_python_cache(path, status_output):
+        if discard_disposable and self._discard_python_cache(path, status_output, before_discard=before_discard):
             return True
         if status_output:
             raise TaskError(f"Task worktree is dirty (modified, untracked or ignored files): {path}; nothing was removed")
         return False
 
-    def _discard_python_cache(self, path: Path, status_output: str) -> bool:
+    def _discard_python_cache(self, path: Path, status_output: str, *, before_discard=None) -> bool:
         records = status_output.split("\0")
         if records and not records[-1]:
             records.pop()
@@ -427,6 +437,8 @@ class Git:
                     if (Path(name).suffix not in {".pyc", ".pyo"}
                             or not stat.S_ISREG((current / name).lstat().st_mode)):
                         return False
+            if before_discard is not None:
+                before_discard()
             for directory, names in cache_files.items():
                 cache = path / directory
                 for name in sorted(names):
@@ -494,7 +506,9 @@ class Git:
     def load_retirement(self, identifier: str, base: str) -> HerdrRetirement | None:
         record = self.retirement_file(identifier)
         try:
-            data = json.loads(record.read_text(encoding="utf-8"))
+            if record.is_symlink() or record.stat().st_size > 1024 * 1024:
+                raise ValueError("invalid retirement file")
+            data = json.loads(record.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
         except FileNotFoundError:
             return None
         except (OSError, ValueError):
@@ -502,38 +516,68 @@ class Git:
         try:
             if (not isinstance(data, dict) or type(data.get("version")) is not int
                     or any(not isinstance(data.get(key), str) for key in (
-                        "identifier", "base", "branch", "path", "workspace_id"))):
+                        "identifier", "base", "branch", "path"))):
                 raise ValueError("invalid retirement fields")
             path = Path(data["path"])
             state = HerdrRetirement(data["identifier"], data["base"], data["branch"],
-                                    path.resolve(), data["workspace_id"])
-            if (data != {"version": 1, "identifier": state.identifier, "base": state.base,
-                         "branch": state.branch, "path": str(path),
-                         "workspace_id": state.workspace_id}
+                                    path.resolve(), data["workspace_id"],
+                                    Path(data["git_dir"]) if data.get("git_dir") else None,
+                                    tuple(data.get("claims", ())))
+            if (data != self.retirement_data(state)
                     or state.identifier != identifier or state.base != base
                     or not belongs_to_issue(state.branch, identifier) or not path.is_absolute()
-                    or not isinstance(state.workspace_id, str) or not state.workspace_id.strip()):
+                    or state.workspace_id is not None and (
+                        not isinstance(state.workspace_id, str) or not state.workspace_id.strip())
+                    or state.git_dir is None and state.workspace_id is None):
                 raise ValueError("retirement identity mismatch")
+            if state.git_dir is not None:
+                common = record.parent.parent
+                if (state.git_dir.parent != common / "worktrees" or state.git_dir.resolve() != state.git_dir
+                        or path.resolve() != path or path == self.repo or self.repo.is_relative_to(path)
+                        or path.is_relative_to(common) or len(state.claims) > 2048
+                        or any(not isinstance(p, str) or not Path(p).is_absolute()
+                               or Path(p).resolve() != Path(p) for p in state.claims)):
+                    raise ValueError("invalid removal reservation")
         except (KeyError, TypeError, ValueError, OSError):
             raise TaskError(f"Invalid pending Herdr retirement state: {record}; inspect it manually") from None
         return state
 
-    def save_retirement(self, state: HerdrRetirement) -> None:
-        record = self.retirement_file(state.identifier)
+    @staticmethod
+    def retirement_data(state):
         data = {"version": 1, "identifier": state.identifier, "base": state.base,
-                "branch": state.branch, "path": str(state.path),
-                "workspace_id": state.workspace_id}
+                "branch": state.branch, "path": str(state.path), "workspace_id": state.workspace_id}
+        if state.git_dir is not None:
+            data.update(version=2, git_dir=str(state.git_dir), claims=list(state.claims))
+        return data
+
+    def save_retirement(self, state: HerdrRetirement) -> None:
+        """Fsync the reservation before releasing exclusive claim admission."""
+        record = self.retirement_file(state.identifier)
+        data = self.retirement_data(state)
+        temporary = None
         try:
             record.parent.mkdir(mode=0o700, exist_ok=True)
-            with record.open("x", encoding="utf-8") as output:
+            previous = self.load_retirement(state.identifier, state.base)
+            if previous is not None and previous not in (state, replace(state, git_dir=None, claims=())):
+                raise TaskError("Pending Herdr retirement state identifies a different task workspace; nothing was removed")
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=record.parent, delete=False) as output:
+                temporary = Path(output.name)
                 json.dump(data, output)
                 output.write("\n")
-        except FileExistsError:
-            if self.load_retirement(state.identifier, state.base) != state:
-                raise TaskError("Pending Herdr retirement state identifies a different task workspace; "
-                                "nothing was removed") from None
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, record)
+            for directory in (record.parent, record.parent.parent):
+                fd = os.open(directory, os.O_RDONLY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
         except OSError:
             raise TaskError(f"Could not save exact Herdr retirement state in {record}; nothing was removed") from None
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     def clear_retirement(self, state: HerdrRetirement) -> None:
         if self.load_retirement(state.identifier, state.base) != state:
@@ -566,9 +610,23 @@ class Git:
         return f"Worktree removal state is unknown or inconsistent: {path}"
 
     def remove_task(self, base: str, target: TaskWorktree, identifier: str,
-                    expected: CleanupState) -> None:
+                    expected: CleanupState, *, before_remove=None, before_delete=None) -> None:
         if self.check_cleanup(base, target, identifier) != expected:
             raise TaskError("Task, base branch or merge evidence changed during cleanup; nothing was removed")
+        from .ownership import ownership_gate
+        from .publication_state import PublicationStore
+        with PublicationStore(self.repo).repository_locked():
+            with ownership_gate(exclusive=True):
+                if before_remove is not None:
+                    before_remove()
+                reservation = self.load_retirement(identifier, base)
+                if (reservation is None or reservation.path != target.path or reservation.git_dir is None):
+                    raise TaskError("Worktree removal requires its durable exact resource reservation")
+            # Recursive deletion may be slow. The task/repository locks and
+            # fsynced reservation exclude overlapping work without a global wait.
+            self._remove_task(base, target, identifier, expected, before_delete=before_delete)
+
+    def _remove_task(self, base, target, identifier, expected, *, before_delete=None):
         if (self.command("rev-parse", "--verify", f"refs/heads/{target.branch}^{{commit}}").strip(),
                 self.command("rev-parse", "--verify", f"refs/heads/{base}^{{commit}}").strip()) != (
                     expected.branch_commit, expected.base_commit):
@@ -577,6 +635,8 @@ class Git:
         # including registration, symbolic HEAD and scope, immediately before
         # removal. A clean checkout alone is not proof of its identity.
         self.check_cleanup_target(base, target, identifier)
+        if before_delete is not None:
+            before_delete()
         try:
             self.command("worktree", "remove", "--", str(target.path))
         except TaskError as error:
@@ -971,11 +1031,49 @@ class Herdr:
             raise TaskError("Git and Herdr do not identify a single usable task worktree; inspect them manually")
         return TaskWorktree(branch, path, match.get("open_workspace_id"))
 
+    def claim_preparation(self, git, base, branch, identifier, slice, *, ownership):
+        """Own an existing selection before fetch can change the shared base.
+
+        Task locks are try-only under the gate; repository administration waits
+        afterward, outside it. Keep this ownership through preparation/handoff.
+        """
+        from .ownership import ownership_gate
+        from .publication_state import PublicationStore
+        git.check_base(base)
+        with ownership_gate(exclusive=True):
+            target = self.resolve_task(git, identifier, branch=branch, slice=slice, include_remotes=False)
+            if git.load_retirement(identifier, base) is not None:
+                raise TaskError("Workspace retirement is pending; finish task cleanup before starting")
+            if target is not None:
+                ownership.enter_context(PublicationStore(target.path).locked())
+            return target
+
     def prepare(self, git: Git, base: str, branch: str, identifier: str,
-                slice: str | None = None, *, default_only: bool = False) -> Workspace:
+                slice: str | None = None, *, default_only: bool = False, ownership=None,
+                selected=_UNSELECTED) -> Workspace:
         target = self.resolve_task(git, identifier, branch=branch, slice=slice)
+        if selected is not _UNSELECTED and target != selected:
+            raise TaskError("Workspace selection changed during preparation; retry exact selection")
+        git.check_history(base, target.branch if target else branch, existing=target is not None)
+        from contextlib import ExitStack
+        from .ownership import ownership_gate
+        from .publication_state import PublicationStore
+        with ExitStack() as local_locks:
+            locks = ownership if ownership is not None else local_locks
+            with ownership_gate(exclusive=True):
+                if self.resolve_task(git, identifier, branch=branch, slice=slice, include_remotes=False) != target:
+                    raise TaskError("Workspace selection changed during preparation; retry exact selection")
+                if git.load_retirement(identifier, base) is not None:
+                    raise TaskError("Workspace retirement is pending; finish task cleanup before starting")
+                if target is not None:
+                    locks.enter_context(PublicationStore(target.path).locked(allow_owned=selected is not _UNSELECTED))
+                workspace = self._prepare_selected(git, base, branch, identifier, slice, default_only, target)
+                if target is None:
+                    locks.enter_context(PublicationStore(workspace.path).locked())
+                return workspace
+
+    def _prepare_selected(self, git, base, branch, identifier, slice, default_only, target):
         if target is None:
-            git.check_history(base, branch, existing=False)
             label = identifier if slice is None else f"{identifier} / {slice}"
             created = self.command("create", "--base", base, "--branch", branch,
                                    "--label", label, "--focus")
@@ -984,7 +1082,6 @@ class Herdr:
             git.save_scope(workspace.path, branch, identifier, slice)
             return replace(workspace, slice=slice)
         branch, path = target.branch, target.path
-        git.check_history(base, branch, existing=True)
         scope = git.resolve_scope(path, branch, identifier, slice)
         if default_only and scope is not None:
             raise TaskError("From-scratch loop requires an unsliced default workspace")

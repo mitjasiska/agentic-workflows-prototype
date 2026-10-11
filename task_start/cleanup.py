@@ -21,7 +21,7 @@ from types import SimpleNamespace
 
 from . import HerdrResponseError, TaskError
 from .contexts import ContextRegistry, HerdrContexts, now
-from .ownership import ownership_operation
+from .ownership import ownership_gate, ownership_operation
 from .github import pull_requests, repository_name
 from .integration_process import shell_executable, stopped_execution
 from .integration_state import IntegrationStore, abandoned_context, evidence_digest, integration_tombstone
@@ -350,41 +350,51 @@ def resource_paths(record):
     return [Path(record["path"]), Path(record["git_dir"]), *(Path(r["path"]) for r in record["roots"])]
 
 
+def normal_retirements(git):
+    home = git.check_repository() / "agentic-workflows-cleanup"
+    for path in sorted(home.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(), object_pairs_hook=unique_object)
+            pending = git.load_retirement(path.stem, data["base"])
+            if pending is None:
+                raise ValueError("missing retirement")
+        except (OSError, ValueError, KeyError, TypeError):
+            raise TaskError("Cannot verify pending workspace retirement; preserve its evidence") from None
+        yield pending
+
+
+def retirement_paths(pending):
+    return [pending.path, *([pending.git_dir] if pending.git_dir else []), *(Path(p) for p in pending.claims)]
+
+
+@ownership_operation
 def ownership_inventory(registry, repository, *, contexts=None):
     """Discover existing workflow evidence, never arbitrary host files/processes.
 
     Registry repositories locate private Git stores, including preparing passes
     without a G row and pending journals whose worktree has already disappeared.
     Missing old repositories cannot release their retained context claims.
-    Caller holds the machine-local ownership gate throughout observation/use.
+    Inventory snapshots take the short gate; admission must hold it exclusively
+    through the durable reservation write.
     """
     contexts = registry.list(include_retired=True) if contexts is None else contexts
-    repositories = {Path(repository), *(Path(c["repository"]) for c in contexts if c["repository"])}
+    repositories = {Path(repository), *(Path(p) for p in registry.repositories()),
+                    *(Path(c["repository"]) for c in contexts if c["repository"])}
     journals, stores, trees = [], [], []
     for repo in sorted(repositories):
         if not repo.exists():
             continue
         git = Git(repo)
         common = git.check_repository()
-        directories = [common]
-        private = common / "worktrees"
-        if private.exists():
-            if private.resolve() != private:
-                raise TaskError("Workflow private Git metadata is aliased")
-            for directory in sorted(private.iterdir()):
-                if directory.is_symlink() or not directory.is_dir():
-                    raise TaskError("Workflow private Git metadata is ambiguous")
-                directories.append(directory)
-                # A registration remains a claim even if its checkout is absent.
-                trees.append((directory, None))
-        for tree in git.worktrees():
-            trees.append((Path(tree["worktree"]), str(repo)))
-        stores.extend(directories)
         home = common / "agentic-workflows-cleanup"
-        if not home.exists():
-            continue
         if home.resolve() != home:
             raise TaskError("Workflow disposal metadata is aliased")
+        removing_paths, removing_dirs = set(), set()
+        for pending in normal_retirements(git):
+            trees.extend((p, None) for p in retirement_paths(pending))
+            if pending.git_dir is not None:
+                removing_paths.add(pending.path)
+                removing_dirs.add(pending.git_dir)
         for directory in sorted(home.glob("*.discard")):
             identifier = directory.name.removesuffix(".discard")
             if not re.fullmatch(r"[A-Z][A-Z0-9]*-[1-9][0-9]*", identifier) or directory.resolve() != directory:
@@ -396,6 +406,35 @@ def ownership_inventory(registry, repository, *, contexts=None):
                 validate_record(saved, SimpleNamespace(identifier=identifier),
                                 SimpleNamespace(base_branch=saved.get("base")), repo, registry)
                 journals.append(saved)
+                if saved["state"] == "pending" and saved["worktree_state"] in {"removing", "removed"}:
+                    removing_paths.add(Path(saved["path"]))
+                    removing_dirs.add(Path(saved["git_dir"]))
+                    trees.extend((Path(saved[k]), None) for k in ("path", "git_dir"))
+        # A published reservation replaces metadata that Git may currently be
+        # deleting. Keep its resource claims, but never inspect half-deleted
+        # checkpoints, integration records, .git pointers or private directories.
+        directories = [common]
+        private = common / "worktrees"
+        if private.exists():
+            if private.resolve() != private:
+                raise TaskError("Workflow private Git metadata is aliased")
+            try:
+                private_directories = sorted(private.iterdir())
+            except FileNotFoundError:
+                # Git may remove this container with the final linked worktree.
+                # Its in-flight resources remain in the journal claims above.
+                private_directories = []
+            for directory in private_directories:
+                if directory in removing_dirs:
+                    continue
+                if directory.is_symlink() or not directory.is_dir():
+                    raise TaskError("Workflow private Git metadata is ambiguous")
+                directories.append(directory)
+                trees.append((directory, None))
+        for tree in git.worktrees():
+            path = Path(tree["worktree"])
+            trees.append((path, None if path in removing_paths else str(repo)))
+        stores.extend(directories)
     return contexts, journals, stores, trees
 
 
@@ -404,7 +443,19 @@ def check_unreserved(registry, repository, worktree, *, endpoint=None, workspace
     if repository is None:
         # Unbound allocations have no filesystem resource to acquire.
         repository = registry.path.parent / "absent-repository"
-    _, journals, _, _ = ownership_inventory(registry, repository, contexts=contexts)
+    contexts, journals, _, _ = ownership_inventory(registry, repository, contexts=contexts)
+    # Ordinary merged cleanup retains its existing exact Herdr retirement
+    # record. It too reserves the path until context retirement is complete.
+    repositories = {Path(repository), *(Path(p) for p in registry.repositories()),
+                    *(Path(c["repository"]) for c in contexts if c["repository"])}
+    for repo in sorted(repositories):
+        if not repo.exists():
+            continue
+        git = Git(repo)
+        for pending in normal_retirements(git):
+            if (worktree is not None and any(overlapping(Path(worktree), p, read_mounts()) for p in retirement_paths(pending))
+                    or workspace_id is not None and workspace_id == pending.workspace_id):
+                raise TaskError("Pending workspace retirement reserves this resource; finish task cleanup before acquiring a claim")
     pending = [j for j in journals if j["state"] == "pending"]
     if not pending:
         return
@@ -608,7 +659,7 @@ def runtime(record, herdr, identities):
             argv = info["foreground_processes"][0]["argv"]
             shell_executable(argv)
         except (KeyError, ValueError, TypeError):
-            raise TaskError(f"Pane {pane['pane_id']} is live or uncertain; quit its agent before --force cleanup. "
+            raise TaskError(f"Pane {pane['pane_id']} is live or uncertain; quit its agent before cleanup. "
                             "An idle agent is not proof of a stopped process") from None
         shells[pid] = dict(cwd=Path(pane["cwd"]), argv=argv)
         panes.append(dict({k: pane[k] for k in ("workspace_id", "pane_id", "terminal_id", "cwd")}, shell_argv=argv))
@@ -731,6 +782,38 @@ def prepare_record(issue, project, repo, git, herdr, registry, identities, targe
     check_task(record, git, herdr, closed=target.open_workspace_id is None)
     check_roots(record, git)
     return record
+
+
+def normal_stopped(record, herdr, identities, base, branch):
+    """Apply the existing selected Linux execution policy to ordinary cleanup."""
+    if record["workspace_id"] is None and not record["contexts"]:
+        # Exact Herdr selection found no open workspace or registered execution.
+        return stopped_execution(resource_paths(record), {})
+    if "base" not in record:
+        record.update(base=base, branch=branch, endpoint=identities.endpoint(), workspace_label="")
+        if any(c["endpoint"] != record["endpoint"] for c in record["contexts"]):
+            raise TaskError("Selected execution belongs to another Herdr endpoint")
+        matches = [w for w in herdr.workspaces() if w["workspace_id"] == record["workspace_id"]]
+        if len(matches) == 1:
+            record["workspace_label"] = matches[0]["label"]
+    return runtime(record, herdr, identities)
+
+
+def removal_retirement(target, identifier, base):
+    """Preserve private-store claims while ordinary Git removal is in flight."""
+    store = PublicationStore(target.path)
+    claims = set()
+    for record in IntegrationStore(publication_store=store).disposal_records():
+        claims.add(str(Path(record["checkout"]).parent))
+        if record.get("output"):
+            claims.add(str(Path(record["output"]).parent))
+    loop = LoopStore(target.path)
+    if loop.path.exists():
+        delivery = loop.read()[0].get("delivery")
+        if delivery:
+            claims.add(delivery["directory"])
+    return HerdrRetirement(identifier, base, target.branch, target.path, target.open_workspace_id,
+                           store.directory, tuple(sorted(claims)))
 
 
 def validate_record(record, issue, project, repo, registry):
@@ -931,6 +1014,25 @@ def check_roots(record, git):
                 raise TaskError("Integration completion evidence disappeared before disposal")
 
 
+@ownership_operation
+def check_normal_ownership(identifier, repo, target, registry, *, endpoint=None):
+    """Normal cleanup shares the forced path's exact overlap exclusions.
+
+    No disposal authorization is inferred here: the caller still needs its
+    normal clean/merged proof. Repeat under exclusive admission before removal.
+    """
+    _, journals, _, _ = ownership_inventory(registry, repo)
+    contexts = [c for c in selected_contexts(registry, identifier, journals)
+                if c["repository"] == str(repo) and c["worktree"] == str(target.path)]
+    record = dict(issue=identifier, repository=str(repo), path=str(target.path),
+                  git_dir=str(PublicationStore(target.path).directory), contexts=contexts,
+                  integrations=[], roots=[], endpoint=endpoint,
+                  workspace_id=target.open_workspace_id, at=now())
+    verify_contexts(record, registry)
+    return record
+
+
+@ownership_operation
 def verify_contexts(record, registry):
     contexts, journals, stores, trees = ownership_inventory(registry, record["repository"])
     saved = {c["context_id"]: c for c in record["contexts"]}
@@ -940,11 +1042,11 @@ def verify_contexts(record, registry):
             continue
         original = saved.get(context["context_id"])
         if original is None or context not in (original, registry.disposal_tombstone(original, record["at"])):
-            raise TaskError("New or changed task context appeared during forced cleanup")
+            raise TaskError("New or changed task context appeared during cleanup")
     for context in saved.values():
         if registry.get(context["context_id"]) not in (
                 context, registry.disposal_tombstone(context, record["at"])):
-            raise TaskError("Selected task context changed during forced cleanup")
+            raise TaskError("Selected task context changed during cleanup")
     paths, mounts = resource_paths(record), read_mounts()
     terminals = {c["terminal_id"] for c in saved.values() if c["terminal_id"]}
     def conflicts(claims):
@@ -1147,9 +1249,20 @@ def finish(record, journal, git, herdr, registry, identities):
     if record["worktree_state"] != "removed":
         record["worktree_state"] = "removing"
         journal.write(record)
-        present, _, _ = guard()
+        present, _, observed = guard()
         if present:
-            git.command("worktree", "remove", "--force", "--", record["path"])
+            # The fsynced removing reservation replaces metadata in inventory;
+            # recursive Git deletion must not hold machine-wide admission.
+            with PublicationStore(git.repo).repository_locked():
+                with ownership_gate(exclusive=True):
+                    verify_contexts(record, registry)
+                    check_task(record, git, herdr, closed=True)
+                check_mounts([Path(record["path"]), Path(record["git_dir"])])
+                # Repository admission can wait; refresh the unchanged Linux
+                # stopped-execution proof after that wait, last before removal.
+                if runtime(record, herdr, identities) != observed:
+                    raise TaskError("Selected execution runtime changed before removal")
+                git.command("worktree", "remove", "--force", "--", record["path"])
         present, _ = check_task(record, git, herdr, closed=True)
         if present:
             raise TaskError("Selected task worktree removal is uncertain")
@@ -1174,7 +1287,6 @@ def finish(record, journal, git, herdr, registry, identities):
     journal.write(record)
 
 
-@ownership_operation(exclusive=True)
 def discard_execution(issue, project, repo, *, branch=None):
     if any(k in os.environ for k in ("GIT_INDEX_FILE", "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR",
                                     "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")):
@@ -1191,6 +1303,10 @@ def discard_execution(issue, project, repo, *, branch=None):
         # journals are immutable history, never a claim on a later execution.
         lock = DisposalStore(git, issue.identifier)
         with lock.locked():
+            # Include retries of journals created before registry discovery was
+            # available, including contextless branch-only remainders.
+            with ownership_gate(exclusive=True):
+                registry.remember_repository(repo)
             journals = []
             for path in git.disposal_files(issue.identifier):
                 journal = DisposalStore(git, issue.identifier, None if path.name == "state.json" else path.stem)
@@ -1246,7 +1362,13 @@ def discard_execution(issue, project, repo, *, branch=None):
                 if record is None:
                     record = prepare_record(issue, project, repo, git, herdr, registry, identities, target,
                                             publication, journal.path.stem, branch=branch)
-                    journal.write(record)
+                    # Claim admission and reservation publication are indivisible.
+                    # No slow provider, remote or filesystem deletion is inside.
+                    with ownership_gate(exclusive=True):
+                        registry.remember_repository(repo)
+                        verify_contexts(record, registry)
+                        check_task(record, git, herdr, closed=target.open_workspace_id is None)
+                        journal.write(record)
                 if record["state"] == "complete":
                     remaining = selected_contexts(registry, issue.identifier, [r for _, r in journals])
                     if any(branch is None or c["worktree"] == record["path"] for c in remaining):
