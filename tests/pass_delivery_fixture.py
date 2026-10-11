@@ -12,8 +12,9 @@ from uuid import uuid4
 def claim(test, execution, reference):
     if execution.delivery_observer:
         execution.delivery_observer(reference, str(uuid4()), execution.handoff)
-        path = Path(re.search(r"(/[^ \n']*/task-loop-[^ /\n']+)/complete.py", execution.handoff)[1])
-        test.addCleanup(shutil.rmtree, path, True)
+        match = re.search(r"(/[^ \n']*/task-loop-[^ /\n']+)/complete.py", execution.handoff)
+        if match:
+            test.addCleanup(shutil.rmtree, Path(match[1]), True)
 
 
 def complete_prompt(prompt):

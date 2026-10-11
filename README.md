@@ -238,9 +238,12 @@ and collect its verified retained result without sending another prompt. Missing
 or conflicting evidence stops for inspection. See
 [recovery](docs/lifecycle.md#checkpoint-and-interruption-recovery).
 
-If an implementation context already exists, the loop resumes that idle conversation
-to finish validation and collect its result. If you already know implementation is
-complete, use `task loop DEV-7 --from-review` to start directly with fresh review.
+If an implementation context already exists, plain `task loop DEV-7` continues
+from its verified completion, or resumes that same conversation to finish work
+and collect structured completion. It can also adopt a completed standalone
+`task review` with matching private evidence: findings go to the original
+implementer, and re-review returns to that same reviewer. A valid clean review
+finishes immediately. `--from-review` remains an explicit review entry option.
 All paths route fixes to the original implementation context and resume the same
 reviewer for focused follow-ups. Clean review finishes with one combined report.
 Product/design/scope decisions, uncertain results, repeated findings, and pass

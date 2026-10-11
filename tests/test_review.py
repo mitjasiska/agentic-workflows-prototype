@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -818,7 +819,7 @@ class ReviewTests(unittest.TestCase):
                     if changes:
                         pane.update(changes[0])
             elif operation == "prompt":
-                writer.deliver(replace(execution, handoff=args[1], runtime_observer=None), session_a)
+                writer.deliver(replace(execution, handoff=args[1], runtime_observer=None, delivery_observer=None), session_a)
             else:
                 self.fail(operation)
             return dict(agent=copy.deepcopy(pane))
@@ -877,14 +878,60 @@ class ReviewTests(unittest.TestCase):
         ]
         with patch.object(FakeReviewer, "deliver", launch_without_output), \
                 patch.object(Pi, "review_status", observe), \
-                patch("task_start.review.time.monotonic", side_effect=lambda: clock[0]), \
-                patch("task_start.review.time.sleep", side_effect=tick):
+                patch("task_start.review.time", SimpleNamespace(monotonic=lambda: clock[0], sleep=tick)):
             result, row, _ = self.late_pi_review(observations)
-        self.assertEqual(len(calls), 10)
+        self.assertEqual(len(calls), 10, result.render())
         self.assertGreater(calls[-1], 5)
         self.assertEqual((result.state, result.invalidated), ("clean", False))
         self.assertEqual((row["state"], row["resumability"]), ("active", "yes"))
         self.assertEqual(context_reference(row)["conversation_id"], "conversation-A")
+        self.assertEqual(len(self.prompts), 1)
+
+    def test_standalone_pi_handoff_retains_late_identity_without_requiring_it_before_prompt(self):
+        from task_start.review_handoff_state import ReviewHandoffStore
+        self.local = replace(self.local, reviewer=AgentConfig("pi", "review-model", "high"))
+        self.adapter = Pi(AgentOptions("pi", "review-model", "high"))
+        session = self.repo.parent / "late-standalone.jsonl"
+        reference = dict(agent="pi", kind="path", value=str(session))
+        writer = FakeReviewer(self)
+        launch = self.adapter.launch
+        request = None
+
+        def execute(execution):
+            nonlocal request
+            request = execution
+            return launch(execution)
+
+        def start(workspace, args, **kwargs):
+            pane = self.panes[-1]
+            pane.update(agent="pi", agent_session=None, agent_status="idle", foreground_cwd=str(self.path))
+            return copy.deepcopy(pane)
+
+        def command(group, operation, *args):
+            self.assertEqual(group, "agent")
+            if operation == "prompt":
+                self.assertFalse(session.exists())
+                recorded = ReviewHandoffStore(self.path).read()
+                self.assertIsNotNone(recorded["receipt"])
+                self.assertIsNone(recorded["reviewer"]["session"])
+                session.write_text(json.dumps(dict(type="session", id="late-conversation", cwd=str(self.path)))
+                    + "\n" + json.dumps(dict(type="message", message=dict(role="assistant", content=[]))) + "\n")
+                writer.deliver(replace(request, delivery_observer=None, runtime_observer=None), reference)
+                self.panes[-1]["agent_status"] = "done"
+            else:
+                self.assertEqual(operation, "get")
+            return dict(agent=copy.deepcopy(self.panes[-1]))
+
+        with patch.object(self.adapter, "check_available"), patch.object(self.adapter, "validate_model_mode"), \
+                patch.object(self.adapter, "check_target"), patch.object(self.adapter, "launch", side_effect=execute), \
+                patch.object(self.adapter, "start_agent", side_effect=start), \
+                patch.object(self.adapter, "command", side_effect=command), \
+                patch.object(self.adapter, "delivery_session", side_effect=AssertionError("Premature identity requirement")):
+            result = review("DEV-7")
+        self.assertEqual(result.state, "clean", result.render())
+        record = ReviewHandoffStore(self.path).read()
+        self.assertEqual(record["reviewer"]["session"]["conversation_id"], "late-conversation")
+        self.assertEqual(record["result"]["pass_id"], result.pass_id)
         self.assertEqual(len(self.prompts), 1)
 
     def test_late_session_divergence_is_surfaced_without_rebinding(self):
@@ -987,7 +1034,7 @@ class ReviewTests(unittest.TestCase):
             if operation == "prompt":
                 self.assertEqual(args[0], mapped["pane_id"])
                 self.assertEqual(args[1], request.handoff)
-                writer.deliver(replace(request, runtime_observer=None), reference)
+                writer.deliver(replace(request, runtime_observer=None, delivery_observer=None), reference)
                 pane["agent_status"] = "done"
             elif operation != "get":
                 self.fail(operation)

@@ -398,8 +398,15 @@ edit task files, fix, stage, commit, push, merge, modify Linear, or change PRs.
 Their only output-file write is a private temporary JSON result outside the task
 checkout. The workflow waits for the same terminal/session to settle, validates a
 pass-specific nonce and strict result shape, then removes the temporary directory.
-No general durable semantic report is stored; only the clean acceptance and
-bounded public publishing metadata described under [task pr](#task-pr) are retained.
+The controller also retains one bounded private handoff in the worktree's Git
+metadata for [loop adoption](#task-loop): issue/repository/worktree/branch/base,
+requirements digest, scope and reviewed snapshot, originating implementation
+identity and checkpoint boundary, reviewer identity and prompt receipt, validated
+`ReviewResult`, publication digest, and consumption marker. It contains no prompt
+or conversation archive. A new standalone pass replaces this record with a pending
+claim before delivery; an interrupted or incomplete record cannot be adopted.
+Clean acceptance and bounded public publishing metadata remain owned by
+[task pr](#task-pr).
 A blocked pass, timeout, or interruption leaves
 the pane intact. Context health and resumability are determined separately from the
 pass verdict using live pane/terminal/session identity and provider history. A verified
@@ -475,23 +482,54 @@ context already exists (except matching saved selections during pre-handoff
 startup recovery), with `--from-review`, and with controls. Existing
 implementation contexts always retain their recorded settings.
 
-When an exact implementation context already exists, start with it idle in the
-open task checkout. The default path still resumes it to finish outstanding
-implementation and validation and collect a structured completion result. For an
-already-completed implementation, this pass reports work without replaying it.
+When an exact implementation context already exists, plain `task loop ISSUE`
+continues from a current durably verified completion in its saved checkpoint
+directly to fresh independent review. Without completion evidence (including an
+ordinary `task start`), it resumes the same idle implementation conversation to
+finish outstanding work and validation and collect structured completion. It then
+starts review automatically. Idleness alone never establishes completion.
+
+A completed fresh standalone `task review` with a retained handoff can supply the review boundary.
+The loop verifies its private handoff against current requirements, Git/base/scope,
+context history, original implementation session and exact reviewer session and
+completed provider receipt. It rechecks live mappings, context health and idle
+runtimes after provider verification. Actionable structured findings go to the
+original implementation conversation; fixes return to that same reviewer. Valid clean
+acceptance finishes without another pass. Human-decision findings and blockers
+escalate with their reason. Adopted review counts toward the configured limits,
+retains its reviewer settings, and rejects conflicting explicit selection flags.
+
+The saved checkpoint remains authoritative. A verified late original I1 result
+may account for an intervening standalone R1 only through that independently saved
+handoff, matching the original claim and the entire context-set difference.
+Original completion seals and provider receipts are still required and are never
+rewritten. The loop records adoption before marking the handoff consumed; crashes
+between these writes reconcile consumption without repeating prompts. For a terminal
+adopted review, retrying even with `--new` first repairs any missing consumption
+marker and reports the original checkpoint's verdict and reason without creating
+a replacement run. Sticky pause intent survives collection and stops before fixes.
+A running controller continues
+all later passes automatically; there is no background supervisor after it exits.
+
+Missing, stale, ambiguous or contradictory proof preserves the workspace and stops
+with a diagnostic. Legacy review output cannot provide adoption evidence, and
+findings are never reconstructed from terminal output or conversations. A fresh
+review can be used when no unresolved or competing claim makes that unsafe; an
+unproven intervening reviewer cannot bypass an existing I1 claim's context check.
 
 When you know the initial implementation is complete, `--from-review` explicitly
-starts a new loop at fresh review, without sending an initial implementation
-completion turn. It still verifies and saves the exact single idle, resumable
+starts a new loop at review, without sending an initial implementation completion
+turn. With an eligible standalone handoff it adopts that review; otherwise it
+starts fresh review. It still verifies and saves the exact single idle, resumable
 implementation context for later fixes. The human selects the starting boundary;
 idle status alone never establishes completion. Existing-context entries never
 adopt an arbitrary running turn or create a replacement implementation context.
 Let its current turn finish before starting. `--from-review` can accompany `--new`,
 but cannot accompany `--continue`, `--status`, `--abort`, or `--pause-after-current`.
 
-The first review uses the existing fresh review primitive with a newly allocated
-independent reviewer. It receives current requirements and actual repository
-state, without implementation conversation or completion prose. Implementation
+When no completed review is adopted, the first review uses the existing fresh review
+primitive with a newly allocated independent reviewer. It receives current requirements
+and actual repository state, without implementation conversation or completion prose. Implementation
 findings return to the original implementation context. A focused re-review uses
 the exact same reviewer context, previous findings, and structured fix claims.
 Review remains read-only and retains the single-pass drift checks. Clean review
@@ -554,13 +592,14 @@ task checkout paths still stop the command.
 
 ### Routing, bounds, and results
 
-Loop reviews extend each finding with a stable `F1`-style `id` and a `category`:
+Review handoffs request each finding with a stable `F1`-style `id` and a `category`:
 `implementation` or `human_decision`. The reviewer must preserve unresolved IDs
 and report all remaining findings, including regressions. Product, architecture,
 design, scope, planning, and ambiguous decisions belong to `human_decision` and
 stop automatic routing, including when mixed with implementation defects.
-Manual review still accepts its original finding shape. The controller never
-classifies findings from free-form explanations.
+Standalone review still accepts its original finding shape for compatibility, but
+such findings cannot be adopted by a loop. The controller never classifies findings
+from free-form explanations.
 
 Fix results identify every supplied finding and describe the claimed resolution;
 the reviewer independently checks those claims. Duplicate/missing/unknown IDs,
@@ -711,6 +750,12 @@ transcripts, credentials, report archive, or publication approval. A versioned
 result and a post-checkpoint pass-result callback provide integration points for
 future report persistence.
 
+For an existing implementation context, interruption before the first completion
+or explicit review handoff leaves an unclaimed boundary. Plain `task loop ISSUE`
+revalidates that exact saved context, requirements and Git snapshot before claiming
+the pending pass. A pending pause remains sticky. This does not authorize replay
+of any claimed prompt or replacement of a competing standalone review claim.
+
 Before the initial handoff, the controller reserves the implementation context
 and saves a version-3 checkpoint with its ID and explicit implementation settings.
 This makes pause/status available even before launch. A pause before the handoff
@@ -768,7 +813,7 @@ preflight while this narrowly recoverable checkpoint still reports `escalated`,
 and the normal state machine must still claim the pass atomically before startup
 or delivery. Such a pause sets only the sticky flag: successful revalidation
 returns `paused` without launching, and `--continue` still requires that paused
-boundary. Other terminal/escalated checkpoints do not acquire this exception.
+boundary. Other initial-launch checkpoints do not acquire this exception.
 The same run ID and I context are used; workspace preparation and
 the Linear status transition are not repeated. Recorded implementation/reviewer
 selections, timeout and bounds survive changed local defaults. Explicit matching
