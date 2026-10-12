@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import re
+import shutil
 import sys
 
 from . import TaskError
@@ -324,3 +325,187 @@ def stopped_loop_execution(path, shells, *, proc=Path("/proc")):
             "process-family evidence, must remain verifiable. Inspect task contexts and "
             "the original shells; do not replace panes or clear the claim to bypass this check"
         ) from error
+
+
+def _provider_process(entry, argv, command):
+    """Native binary or the installed script running under its own interpreter."""
+    if os.path.samefile(entry / "exe", command):
+        return True
+    if len(argv) < 2 or not Path(argv[1]).is_absolute() or not Path(argv[1]).is_file():
+        return False
+    if not os.path.samefile(argv[1], command):
+        return False
+    with open(command, "rb") as source:
+        shebang = source.readline(256).strip()
+    if shebang == b"#!/usr/bin/env node":
+        interpreter = shutil.which("node")
+    elif shebang in {b"#!/usr/bin/node", b"#!/bin/node"}:
+        interpreter = os.fsdecode(shebang[2:])
+    else:
+        return False  # Unknown wrappers are not executable identity evidence.
+    return bool(interpreter and os.path.samefile(entry / "exe", interpreter))
+
+
+def _possible_provider(entry, argv, commands):
+    """Conservative refusal evidence, never proof of a registered session.
+
+    A nested provider can run outside the foreground group or through a script
+    interpreter. An installed launcher/native-child pair is also uncertain: its
+    ancestry alone does not bind both invocations to the pane's checked session.
+    """
+    if (Path(os.readlink(entry / "exe")).name in {"codex", "pi"}
+            or argv and Path(argv[0]).name in {"codex", "pi"}):
+        return True
+    for command in commands:
+        if _provider_process(entry, argv, command):
+            return True
+        cwd = Path(os.readlink(entry / "cwd"))
+        if not cwd.is_absolute():
+            raise ValueError("missing provider child cwd")
+        for arg in argv[1:]:
+            candidate = cwd / arg  # Absolute arguments replace cwd; relative scripts use the child's cwd.
+            if candidate.is_file() and os.path.samefile(candidate, command):
+                return True
+    return False
+
+
+def owned_pane_processes(panes, *, expected=None, closing=False, proc=Path("/proc")):
+    """Freeze exact Linux families before Herdr retirement; never signal a PID.
+
+    `panes` contains freshly read Herdr process-info and the independently checked
+    provider kind. Only descendants of that foreground job may accompany an idle
+    provider. Shell background jobs are not owned agent workers. Frozen members
+    remain evidence after reparenting, pane removal, or a lost close response.
+    """
+    if not sys.platform.startswith("linux"):
+        raise TaskError("Owned agent retirement requires Linux process evidence")
+    expected = expected or {}
+    try:
+        _process_visibility(proc)
+        roots = {p["info"]["shell_pid"] for p in panes.values()}
+        roots |= {int(pid) for family in expected.values() for pid in family["members"]}
+
+        def collect():
+            graph = _process_graph(proc, roots)
+            families, admitted = {}, set()
+            for pane_id, pane in panes.items():
+                info = pane["info"]
+                pid, foreground = info["shell_pid"], info["foreground_process_group_id"]
+                if (type(pid) is not int or pid <= 0 or type(foreground) is not int or foreground <= 0
+                        or info["pane_id"] != pane_id or not isinstance(info["foreground_processes"], list)):
+                    raise ValueError("invalid Herdr process identity")
+                shell = graph[pid]
+                argv = (shell.entry / "cmdline").read_bytes().decode(errors="surrogateescape").rstrip("\0").split("\0")
+                verify_shell_process(pid, argv, proc=proc)
+                if (not shell.live or shell.kernel or shell.state != "S"
+                        or shell.group != pid or shell.session != pid or shell.terminal == 0
+                        or shell.foreground != foreground
+                        or Path(os.readlink(shell.entry / "cwd")) != pane["cwd"]):
+                    raise ValueError("original shell/TTY changed")
+                fg = {p.leader for p in graph.values() if p.live and p.group == foreground}
+                reported = info["foreground_processes"]
+                if (not fg or len(reported) != len(fg) or {p["pid"] for p in reported} != fg
+                        or any(type(p["pid"]) is not int for p in reported)):
+                    raise ValueError("foreground process membership changed")
+                for p in reported:
+                    if (graph[p["pid"]].session != pid or graph[p["pid"]].terminal != shell.terminal
+                            or (proc / str(p["pid"]) / "cmdline").read_bytes()
+                            != os.fsencode("\0".join(p["argv"]) + "\0")):
+                        raise ValueError("foreground process argv/TTY changed")
+                descendants = {pid}
+                while True:
+                    found = {p.leader for p in graph.values() if p.parent in descendants}
+                    if found <= descendants:
+                        break
+                    descendants |= found
+                family = {p.leader for p in graph.values() if p.live and
+                          (p.leader in descendants or p.session == pid or p.group == pid)}
+                if pane["agent"] is None:
+                    if family != {pid} or fg != {pid}:
+                        raise TaskError(f"Pane {pane_id} has an unregistered background worker; stop it before cleanup")
+                else:
+                    # A provider process must actually run the installed agent,
+                    # not just occupy a pane whose detection metadata is stale.
+                    command = shutil.which(pane["agent"])
+                    providers = {p["pid"] for p in reported if command
+                                 and _provider_process(proc / str(p["pid"]), p["argv"], command)}
+                    if not providers:
+                        raise TaskError(f"Pane {pane_id} foreground executable is not the registered agent")
+                    def provider_ancestor(member):
+                        seen = {member}
+                        while member in graph:
+                            member = graph[member].parent
+                            if member in seen:
+                                raise ValueError("cyclic provider ancestry")
+                            if member in providers:
+                                return True
+                            seen.add(member)
+                        return False
+                    provider_roots = {member for member in providers if not provider_ancestor(member)}
+                    if len(provider_roots) != 1:
+                        raise TaskError(f"Pane {pane_id} has multiple provider roots; session ownership is ambiguous")
+                    commands = {command, *(found for agent in ("codex", "pi")
+                                          if (found := shutil.which(agent)))}
+                    for member in family - {pid} - provider_roots:
+                        entry = proc / str(member)
+                        child_argv = os.fsdecode((entry / "cmdline").read_bytes()).rstrip("\0").split("\0")
+                        if _possible_provider(entry, child_argv, commands):
+                            raise TaskError(f"Pane {pane_id} has an unregistered provider invocation ({member}); "
+                                            "let its turn finish and stop that process before cleanup")
+                    owned = set(provider_roots)
+                    while True:
+                        found = {p.leader for p in graph.values() if p.parent in owned}
+                        if found <= owned:
+                            break
+                        owned |= found
+                    if pid in fg or not fg <= descendants or family != {pid} | owned:
+                        raise TaskError(f"Pane {pane_id} has an unregistered background worker; stop it before cleanup")
+                if admitted & family or len(family) > 256:
+                    raise ValueError("ambiguous or oversized process family")
+                admitted |= family
+                members = {}
+                for member in family:
+                    process = graph[member]
+                    if process.kernel:
+                        raise ValueError("kernel task in agent family")
+                    members[str(member)] = dict(started=process.started, parent=process.parent,
+                        group=process.group, session=process.session, terminal=process.terminal,
+                        exe=os.readlink(process.entry / "exe"),
+                        argv=os.fsdecode((process.entry / "cmdline").read_bytes()))
+                families[pane_id] = dict(shell=pid, foreground=foreground, shell_argv=argv, members=members)
+
+            for pane_id, prior in expected.items():
+                current = families.get(pane_id)
+                if current == prior:
+                    continue
+                if not closing:
+                    raise TaskError(f"Pane {pane_id} process identity changed before retirement")
+                if current is not None:
+                    if (current["shell"] != prior["shell"] or current["shell_argv"] != prior["shell_argv"]
+                            or any(prior["members"].get(pid) != value for pid, value in current["members"].items())
+                            or current["foreground"] not in {prior["foreground"], prior["shell"]}):
+                        raise TaskError(f"Pane {pane_id} process was replaced during retirement")
+                remaining = set(current["members"]) if current else set()
+                for pid, identity in prior["members"].items():
+                    if pid in remaining:
+                        continue
+                    observed = graph.get(int(pid))
+                    if observed is not None and observed.started != identity["started"]:
+                        raise TaskError(f"Recorded process {pid} was reused; preserve the cleanup journal")
+                    if observed is not None and observed.live:
+                        raise TaskError(f"Recorded process {pid} still runs after pane retirement; stop it before retrying cleanup")
+            # Frozen PIDs, groups and sessions continue to catch surviving jobs
+            # even after every pane disappears. No unrelated private data is read.
+            _check_process_graph({tid: p for tid, p in graph.items() if p.leader not in admitted}, {},
+                {pid: value["started"] for family in expected.values()
+                 for pid, value in family["members"].items() if int(pid) not in admitted})
+            if set(families) - set(expected) and expected:
+                raise TaskError("New pane appeared during owned agent retirement")
+            return families
+
+        before = collect()
+        if collect() != before:
+            raise ValueError("agent process family changed during inspection")
+        return before
+    except (OSError, KeyError, TypeError, ValueError, IndexError):
+        raise TaskError("Owned pane process/TTY identity is missing or changed; cleanup refused on Herdr's Linux host") from None

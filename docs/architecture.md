@@ -437,6 +437,30 @@ python3.12 -m unittest discover -s tests -p 'test*cleanup.py' -v
 python3.12 -m unittest discover -s tests -p 'test_integration_abandon.py' -v
 ```
 
+The optional [owned-agent live acceptance](../tests/live_owned_agent_cleanup.py)
+runs separately on the Linux host of Herdr 0.9.1/protocol 22 with Codex installed:
+
+```sh
+python3.12 tests/live_owned_agent_cleanup.py --output /tmp/awl-cleanup-acceptance-NEW
+```
+
+Use a new output directory. The harness creates disposable Git worktrees, a private
+registry, and real Herdr panes. Codex uses the host installation and session home
+that Herdr observes; its new conversations remain as provider history. Two TUIs complete turns
+against a local unauthenticated Responses fixture; the selected controller lock is
+released before production `cleanup(..., force=True)` closes their workspace. A
+third Codex turn and controller lock remain active in another worktree of the same
+repository through cleanup and its idempotent retry. The harness verifies selected
+process exit/resource removal and that the unrelated turn can finish afterward,
+then retires its own remaining workspace. It never sends `/exit`.
+Linear, configuration and remote-publication services are synthetic; provider
+inactivity, Herdr capability/closure, Linux process checks, journal and Git disposal
+are real. `revision.json` records HEAD and source file hashes, `report.txt` records
+dated observations, and `disposal.json` copies the generated disposable audit.
+These local artifacts are validation evidence, not a live-model or full-loop test.
+The harness refuses filtered/sandbox proc mounts before creating resources and
+does not participate in the credential-free offline suite.
+
 Final pre-merge gate: the full offline regression suite must pass before human
 merge, separately from agent-local focused validation:
 

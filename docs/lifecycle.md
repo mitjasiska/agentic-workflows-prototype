@@ -1575,7 +1575,10 @@ task cleanup DEV-30 --force
 
 `--force` is destructive authorization to discard one selected,
 **never-published or proven merged local execution**, including modified, staged, untracked and
-ignored task files. This authorization is independent of the Linear issue state:
+ignored task files and its exact owned idle implementation/reviewer agent sessions.
+Stop any controller owning that workspace first. Working provider turns must finish
+or be explicitly stopped by the operator; force does not cancel active turns.
+This authorization is independent of the Linear issue state:
 the issue may remain In Progress, and cleanup does not update its status. Without
 `--force`, the completed-task contract above is unchanged.
 
@@ -1621,12 +1624,13 @@ execution's metadata blocks removal, including on final revalidation and retries
 Keep private metadata intact. A stale base requires a separate update in the
 permanent checkout, as described above.
 
-Quit the execution's agents before running this command from outside all
-task/integration checkouts. Empty shells in the exact task workspace may
+Run this command from outside all task/integration checkouts. Empty shells and
+verified idle implementation/reviewer agents in the exact task workspace may
 remain: cleanup proves their identity and closes that workspace. An `idle` agent
-status alone is insufficient. Cleanup compares Herdr's shell argv with the local
-Linux process executable and argv, and requires a sleeping shell with its own
-foreground terminal and session. Only ordinary interactive/login invocations of
+status alone is insufficient. The shell-only path compares Herdr's shell argv with
+the local Linux executable and argv and requires a sleeping shell with its own
+foreground terminal and session. The agent path proves the original sleeping shell
+and its provider foreground family. Only ordinary interactive/login invocations of
 system shells under `/bin` or `/usr/bin` are supported; script/command arguments,
 missing evidence, and an exec-replaced shell PID refuse disposal.
 
@@ -1669,6 +1673,28 @@ registered shells must actually exit. Historical provider conversations remain
 outside disposal. Older pending journals without recorded shell-session proof
 still require inspection; they are not silently promoted to new evidence.
 
+On Linux with the verified Herdr 0.9.1 server/protocol 22, force can close a
+registered implementation/reviewer TUI that is idle or done at its provider prompt.
+It checks the exact context, provider session, terminal, foreground argv/executable,
+shell PID/start/TTY and process family. Codex additionally verifies its persisted
+terminal turn and empty input queue through the provider API. An idle badge or CLEAN
+result alone is insufficient. Unsupported Herdr versions require manually quitting
+agents to their original shells until their close semantics have been validated.
+Another provider invocation anywhere in that family, including a nested
+`codex exec` or an unverified launcher/native-child pair, refuses closure: ancestry
+does not prove that its separate turn is idle. Let it finish and stop that process
+before retrying cleanup.
+
+The existing journal reserves the execution and freezes all observed family PIDs
+and start times before requesting exact workspace closure. This stop runs under the
+selected workspace lock, outside the registry gate. Herdr's response alone never
+proves termination: cleanup checks pane absence and waits up to three seconds for
+the recorded processes and related workers to exit. Failed or interrupted closure
+retains the claim; rerunning force reconciles those same identities. A reused PID,
+replacement terminal, unknown worker or surviving descendant refuses deletion.
+Completed journals retain bounded agent retirement evidence. Force sends no `/exit`
+input or custom process signals and does not resume provider sessions.
+
 V1 does not prove a global absence of host references. Unmanaged editors,
 detached daemons, escaped/reparented jobs outside recorded execution families,
 containers and arbitrary external bind aliases are outside this guarantee.
@@ -1676,11 +1702,10 @@ Stop unmanaged activity yourself before using force. Stronger guarantees need
 runner-owned process groups/cgroups, durable membership or leases, and controlled
 filesystem access; repeated host-wide snapshots cannot provide those guarantees.
 
-It refuses live agents, unrelated panes, moved or replaced terminals, another
+It refuses active or unverified agent turns, unrelated panes, moved or replaced terminals, another
 Herdr endpoint, inaccessible process evidence, and other registry contexts
 claiming the workspace or disposable paths. Run on the same host/PID namespace
-as Herdr. The command does not send terminal input, quit
-agents, or resume provider sessions. Historical provider conversations remain
+as Herdr. Historical provider conversations remain
 outside this disposal operation.
 
 The permanent checkout must be clean and on the configured base. Exact Git
@@ -1766,9 +1791,10 @@ not hold the machine-wide registry gate. Cleanup holds that same worktree lock
 and the repository-local disposal lock that survives worktree removal.
 
 A **same-workspace conflict** names the owned checkout. Let that controller
-finish, or stop it with Ctrl+C before retrying. For abort or either cleanup path,
-also quit the selected agents to their original shells and satisfy the existing stopped
-process checks. Do not stop an unrelated loop. **Registry contention** waits up
+finish, or stop it with Ctrl+C before retrying. Abort and ordinary cleanup also
+require quitting the selected agents to their original shells. Forced cleanup can
+retire verified idle implementation/reviewer sessions and then checks that their
+process families stopped. Do not stop an unrelated loop. **Registry contention** waits up
 to 30 seconds for a short ownership transaction, then asks you to retry shortly;
 persistent contention calls for inspecting the controller doing registry/Git
 administration. Shared repository fetch/base updates and worktree removal also

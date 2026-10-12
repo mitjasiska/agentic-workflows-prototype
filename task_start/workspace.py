@@ -734,6 +734,23 @@ class Herdr:
     def __init__(self, repo: Path):
         self.repo = repo
 
+    def check_agent_retirement(self):
+        """Linux close semantics validated against the installed V1 protocol.
+
+        CLI help alone cannot establish server support. Unknown versions refuse
+        automatic agent termination until their close semantics are validated.
+        """
+        status = run(["herdr", "status", "server"], timeout=10)
+        facts = dict(re.findall(r"^([a-z_]+):\s*(\S+)\s*$", status, re.MULTILINE))
+        if (facts.get("status") != "running" or facts.get("version") != "0.9.1"
+                or facts.get("private_protocol") != "22" or facts.get("endpoint_compatible") != "yes"
+                or facts.get("private_protocol_compatible") != "yes"):
+            raise TaskError("Installed Herdr server lacks verified owned-agent close semantics; "
+                            "quit the selected agents to their original shells before --force cleanup")
+        help_text = run(["herdr", "workspace", "close", "--help"], timeout=10)
+        if "herdr workspace close <workspace_id>" not in help_text:
+            raise TaskError("Installed Herdr CLI lacks exact workspace close support")
+
     def command(self, operation: str, *args: str) -> dict:
         output = run(["herdr", "worktree", operation, "--cwd", str(self.repo), *args])
         try:

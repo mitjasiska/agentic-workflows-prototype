@@ -18,7 +18,7 @@ from .codex_rpc import CodexRPC, validate_readiness_only
 from .config import AgentConfig
 from .linear import Issue
 from .integration_process import stopped_checkout
-from .sessions import SessionInvalid, merge_session, same_session, session_identity
+from .sessions import SessionInvalid, has_immutable_identity, merge_session, same_session, session_identity
 from .review_result import unique_object
 from .workspace import Workspace, run
 
@@ -106,6 +106,8 @@ class AgentAdapter(Protocol):
     def verify_session(self, workspace: Workspace, reference: dict) -> dict: ...
 
     def verify_stopped_session(self, workspace, reference, receipt=None): ...
+
+    def verify_cleanup_idle(self, workspace, reference, pane): ...
 
     def resume(self, execution: AgentExecution, reference: dict, *, recreate: bool) -> LaunchResult: ...
 
@@ -271,6 +273,22 @@ class HerdrAgentAdapter:
     def verify_stopped_session(self, workspace, reference, receipt=None):
         raise TaskError(f"Stopped-session verification is unsupported for {self.display_name}")
 
+    def verify_cleanup_idle(self, workspace, reference, pane):
+        """Positive provider inactivity is permission to close, never exit proof."""
+        try:
+            self.validate_agent(pane, workspace, review=True)
+            if (not has_immutable_identity(reference, self.kind)
+                    or not same_session(reference, pane.get("agent_session"), self.kind)
+                    or pane.get("launch_pending") or pane.get("agent_status") not in {"idle", "done"}):
+                raise ValueError("unknown session or active turn")
+            self.cleanup_provider_idle(workspace, reference)
+        except (KeyError, TypeError, ValueError, TaskError) as error:
+            raise TaskError(f"Pane {workspace.pane_id} provider turn is working or unverified; "
+                            f"let it finish or explicitly stop it before --force cleanup. {error}") from None
+
+    def cleanup_provider_idle(self, workspace, reference):
+        raise TaskError(f"{self.display_name} has no verified idle-provider cleanup capability")
+
     def resume(self, execution: AgentExecution, reference: dict, *, recreate: bool) -> LaunchResult:
         return self.resume_review(execution, reference, recreate=recreate)
 
@@ -355,6 +373,30 @@ class CodexAdapter(HerdrAgentAdapter):
     MODES = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
     SHELL_READY_TIMEOUT = 30
     POST_TRUST_READY_TIMEOUT = 30
+
+    def cleanup_provider_idle(self, workspace, reference):
+        """Read current provider state and queue, including a prompt with no turns."""
+        try:
+            if reference["kind"] != "id" or str(UUID(reference["value"])) != reference["value"]:
+                raise ValueError("invalid Codex session")
+            with CodexRPC(workspace.path) as rpc:
+                thread = rpc.request("thread/read", dict(threadId=reference["value"]))["thread"]
+                if (thread["id"] != reference["value"] or Path(thread["cwd"]).resolve() != workspace.path
+                        or thread.get("forkedFromId") is not None or thread.get("parentThreadId") is not None
+                        or thread["status"] not in ({"type": "idle"}, {"type": "notLoaded"})):
+                    raise ValueError("different or active provider thread")
+                page = rpc.request("thread/turns/list", dict(threadId=reference["value"],
+                    sortDirection="desc", limit=1, itemsView="full"))
+                if (not isinstance(page["data"], list) or len(page["data"]) > 1
+                        or not page["data"] and page["nextCursor"] is not None
+                        or any(t["status"] not in {"completed", "interrupted", "failed"}
+                               or t["itemsView"] != "full" for t in page["data"])):
+                    raise ValueError("latest turn is working or uncertain")
+                queue = rpc.request("thread/queue/list", dict(threadId=reference["value"], limit=1))
+                if queue["data"] != [] or queue["nextCursor"] is not None:
+                    raise ValueError("queued input")
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise TaskError("Codex has an active/unknown turn, changed session, or queued input") from None
 
     def validate_options(self) -> None:
         mode = "none" if self.options.mode == "off" else self.options.mode
@@ -1042,6 +1084,44 @@ class PiAdapter(HerdrAgentAdapter):
     kind = "pi"
     display_name = "Pi"
     MODES = {"off", "minimal", "low", "medium", "high", "xhigh", "max"}
+
+    def cleanup_provider_idle(self, workspace, reference):
+        """Require intact current history ending at a terminal provider message."""
+        try:
+            verified = self.delivery_session(workspace, reference)
+            if verified != reference or not reference.get("conversation_id"):
+                raise ValueError("missing immutable conversation identity")
+            path = Path(reference["value"])
+            with path.open("rb") as source:
+                raw = source.read(64 * 1024 * 1024 + 1)
+            if not raw.endswith(b"\n") or len(raw) > 64 * 1024 * 1024:
+                raise ValueError("incomplete history")
+            lines = raw.splitlines()
+            if any(not line or len(line) > 2 * 1024 * 1024 for line in lines):
+                raise ValueError("incomplete history entries")
+            entries = [json.loads(line, object_pairs_hook=unique_object) for line in lines]
+            header = entries[0]
+            if (header["type"] != "session" or header["id"] != reference["conversation_id"]
+                    or Path(header["cwd"]).resolve() != workspace.path):
+                raise ValueError("session changed")
+            parent, ids, latest = None, set(), None
+            for entry in entries[1:]:
+                if (entry["type"] not in {"message", "model_change", "thinking_level_change"}
+                        or not isinstance(entry["id"], str) or not entry["id"] or entry["id"] in ids
+                        or entry["parentId"] != parent):
+                    raise ValueError("unsupported, compacted or branched history")
+                parent = entry["id"]
+                ids.add(parent)
+                if entry["type"] == "message":
+                    latest = entry["message"]
+            if latest is not None and (latest["role"] != "assistant"
+                    or latest.get("stopReason") not in {"stop", "aborted", "error"}):
+                raise ValueError("latest turn is unfinished")
+            with path.open("rb") as source:
+                if source.read(len(raw) + 1) != raw:
+                    raise ValueError("history changed")
+        except (OSError, UnicodeError, ValueError, KeyError, TypeError):
+            raise TaskError("Pi current turn is working or its complete session history is unverified") from None
 
     def delivery_session(self, workspace, reference):
         """The native header exists before Pi's first task message."""

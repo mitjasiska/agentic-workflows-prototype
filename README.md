@@ -366,11 +366,13 @@ merges are supported when their evidence matches the local task and base. See
 [cleanup requirements and retries](docs/lifecycle.md#task-cleanup).
 
 To discard an unpublished or proven merged local execution without changing its Linear status,
-quit its agents, then run `task cleanup DEV-7 --force` from outside the task
+stop its controller, then run `task cleanup DEV-7 --force` from outside the task
 workspace. `--force` is explicit authorization to delete dirty task contents and
 retained integration checkouts/output, close the proven task workspace, and retire
-contexts while preserving bounded provenance and context history. Live registered
-execution, another execution's resource claim, unrelated panes, unmerged publication,
+contexts while preserving bounded provenance and context history. It may stop the
+selected implementation/reviewer sessions after proving their exact identity and
+provider inactivity. Working turns must finish or be explicitly stopped first.
+Remaining workers, another execution's resource claim, unrelated panes, unmerged publication,
 or uncertain identity cause refusal. Merged recovery also supports a manually
 registered worktree without scope metadata when exact Git/Herdr identity and merge
 evidence agree on one local execution. Abandoned integrations still own

@@ -1038,7 +1038,7 @@ class HandoffOrchestrationTests(unittest.TestCase):
         self.workspace = replace(self.workspace, slice="codex-handoff")
         order = []
         self.git.update_base.side_effect = lambda *a: order.append("base")
-        self.herdr.prepare.side_effect = lambda *a: order.append("workspace") or self.workspace
+        self.herdr.prepare.side_effect = lambda *a, ownership, selected: order.append("workspace") or self.workspace
         self.linear.start.side_effect = lambda *a: order.append("linear")
         self.agent.launch.side_effect = lambda *a: order.append("agent") or LaunchResult(
             "codex", self.workspace.pane_id, "working")

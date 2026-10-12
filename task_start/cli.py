@@ -47,14 +47,15 @@ def parser() -> argparse.ArgumentParser:
                     "without changing its Linear status. Merged recovery can use exact Git/Herdr identity when "
                     "legacy scope metadata is absent. Use --branch to select one proven merged execution "
                     "when multiple default/sliced candidates exist. "
-                    "Quit its agents first and run outside its checkouts; exact identity and stopped-process "
+                    "Force may stop exact owned idle agent sessions; active turns must finish or be stopped first. "
+                    "Run outside its checkouts; exact identity and stopped-process "
                     "proof for registered execution are required. Other executions retain their resource claims; "
                     "unmanaged host references are outside the V1 guarantee. Independent workspaces may keep running. "
                     "A same-workspace controller must finish or stop; short registry contention can be retried. "
                     "Rerun --force to finish a partial disposal.")
     cleanup_command.add_argument("issue", type=issue_identifier)
     cleanup_command.add_argument("--force", action="store_true",
-        help="Discard one unpublished or proven merged local execution without changing Linear status, including dirty files and retained artifacts")
+        help="Destroy uncommitted files and retained artifacts and stop owned idle agent sessions of one unpublished or proven merged execution; preserve Linear status")
     cleanup_command.add_argument("--branch", help="Select an exact local issue branch for proven merged cleanup (requires --force)")
     contexts = commands.add_parser("contexts", help="Inspect machine-local workflow contexts (read-only)")
     contexts.add_argument("issue", nargs="?", type=issue_identifier)
