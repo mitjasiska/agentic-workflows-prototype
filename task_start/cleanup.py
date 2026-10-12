@@ -16,14 +16,16 @@ import shutil
 import shlex
 import stat
 import sys
+import time
 from uuid import UUID, uuid4
 from types import SimpleNamespace
 
 from . import HerdrResponseError, TaskError
-from .contexts import ContextRegistry, HerdrContexts, now
+from .contexts import ContextRegistry, HerdrContexts, context_reference, now
+from .agent import AgentOptions, adapter_for
 from .ownership import ownership_gate, ownership_operation
 from .github import pull_requests, repository_name
-from .integration_process import shell_executable, stopped_execution
+from .integration_process import owned_pane_processes, shell_executable, stopped_execution
 from .integration_state import IntegrationStore, abandoned_context, evidence_digest, integration_tombstone
 from .integrate import history_identity
 from .publication_state import PublicationStore, verify_publication_history
@@ -31,7 +33,7 @@ from .loop_state import LoopStore
 from .pass_delivery import FILES as PASS_FILES, check_directory, read_private, validate_delivery
 from .publish import remote_identity, verify_remote_identity
 from .review_result import unique_object
-from .workspace import Git, Herdr, HerdrRetirement, TaskWorktree, belongs_to_issue
+from .workspace import Git, Herdr, HerdrRetirement, TaskWorktree, Workspace, belongs_to_issue
 
 
 MOUNTINFO = Path("/proc/self/mountinfo")
@@ -619,15 +621,17 @@ def separate_workspace(record, herdr, entry):
     return True
 
 
-def runtime(record, herdr, identities):
-    """Only the exact task workspace, exact context terminals and stopped shells."""
+def runtime(record, herdr, identities, *, stop_agents=False):
+    """Exact task runtime; force may admit positively idle, registered agents."""
     if identities.endpoint() != record["endpoint"]:
         raise TaskError("Selected execution belongs to another Herdr endpoint")
     contexts = record["contexts"]
     allowed = {record["path"], *(i["checkout"] for i in record["integrations"])}
     terminals = {c["terminal_id"] for c in contexts if c["terminal_id"]}
     pane_ids = {c["pane_id"] for c in contexts if c["pane_id"]}
-    panes, shells = [], {}
+    panes, shells, processes = [], {}, {}
+    previous = record.get("runtime") or {}
+    owned = previous.get("process_proof") == 2
     for pane in identities.snapshot():
         paths = [pane.get(k) for k in ("cwd", "foreground_cwd") if pane.get(k)]
         related = (pane["workspace_id"] == record["workspace_id"]
@@ -648,6 +652,21 @@ def runtime(record, herdr, identities):
             raise TaskError("Unregistered or replaced execution pane; disposal refused")
         try:
             info = identities.command("pane", "process-info", "--pane", pane["pane_id"])["process_info"]
+            processes[pane["pane_id"]] = dict(info=info, cwd=Path(pane["cwd"]), agent=None)
+            if stop_agents and pane.get("agent"):
+                if (len(matches) != 1 or matches[0]["role"] not in {"implementation", "review"}
+                        or matches[0]["workspace_id"] != pane["workspace_id"]
+                        or matches[0]["tab_id"] != pane["tab_id"] or matches[0]["agent"] != pane["agent"]):
+                    raise TaskError(f"Pane {pane['pane_id']} is not an exact registered implementation/reviewer agent")
+                context = matches[0]
+                workspace = Workspace(path=Path(pane["cwd"]), branch=record["branch"],
+                    workspace_id=pane["workspace_id"], tab_id=pane["tab_id"], pane_id=pane["pane_id"], action="cleanup")
+                adapter_for(AgentOptions(context["agent"], context["model"], context["mode"])).verify_cleanup_idle(
+                    workspace, context_reference(context), pane)
+                processes[pane["pane_id"]]["agent"] = context["agent"]
+                owned = True
+                panes.append({k: pane[k] for k in ("workspace_id", "pane_id", "terminal_id", "cwd")})
+                continue
             pid = info["shell_pid"]
             if (info["pane_id"] != pane["pane_id"] or type(pid) is not int or pid <= 0
                     or type(info["foreground_process_group_id"]) is not int
@@ -695,8 +714,27 @@ def runtime(record, herdr, identities):
             label_claim = False
         if label_claim or location.get("checkout_path") in allowed:
             raise TaskError("Another Herdr workspace claims this execution; disposal refused")
-    closed_shells = (record.get("runtime") or {}).get("shells") if entry is None else None
+    closed_shells = previous.get("shells") if entry is None else None
     paths = [Path(record["path"]), Path(record["git_dir"]), *(Path(r["path"]) for r in record["roots"])]
+    if owned:
+        if any(Path.cwd().is_relative_to(path) for path in paths):
+            raise TaskError("Run forced cleanup from outside all execution deletion targets")
+        if processes:
+            herdr.check_agent_retirement()
+        frozen = previous.get("families", {})
+        if frozen:
+            original = {p["pane_id"]: p for p in previous["panes"]}
+            for pane in panes:
+                saved = original.get(pane["pane_id"], {})
+                if any(pane[k] != saved.get(k) for k in ("workspace_id", "pane_id", "terminal_id", "cwd")):
+                    raise TaskError("Owned agent pane was replaced during retirement")
+        families = owned_pane_processes(processes, expected=frozen,
+                                        closing=record["workspace_state"] in {"closing", "closed"})
+        for pane in panes:
+            pane["shell_argv"] = families[pane["pane_id"]]["shell_argv"]
+        return dict(process_proof=2, workspace=entry is not None, panes=sorted(panes, key=lambda p: p["pane_id"]),
+                    shells={str(f["shell"]): f["members"][str(f["shell"])]["started"] for f in families.values()},
+                    families=families)
     proof = stopped_execution(paths, shells, closed_shells=closed_shells)
     # Persist that these PIDs were proved to be session leaders. On a retry
     # after closure, their session/group IDs are still execution evidence.
@@ -776,7 +814,7 @@ def prepare_record(issue, project, repo, git, herdr, registry, identities, targe
     if retirement:
         record["workspace_label"] = next(w["label"] for w in herdr.workspaces()
                                           if w["workspace_id"] == retirement.workspace_id)
-    record["runtime"] = runtime(record, herdr, identities)
+    record["runtime"] = runtime(record, herdr, identities, stop_agents=True)
     validate_record(record, issue, project, repo, registry)
     verify_contexts(record, registry)
     check_task(record, git, herdr, closed=target.open_workspace_id is None)
@@ -865,6 +903,11 @@ def validate_record(record, issue, project, repo, registry):
                                              binding=dict(worktree=record["path"])))
             if context and not any(c["context_id"] == context["context_id"] for c in record["contexts"]):
                 raise ValueError("unowned loop output")
+        if "agent_retirement" in record:
+            fields.add("agent_retirement")
+            if record["state"] != "complete":
+                raise ValueError("premature agent retirement evidence")
+            validate_agent_runtime(record["agent_retirement"])
         if set(record) != fields or not isinstance(record["contexts"], list):
             raise ValueError("invalid journal fields")
         if any(not isinstance(record[k], str) or not record[k]
@@ -879,8 +922,12 @@ def validate_record(record, issue, project, repo, registry):
             proof = record["runtime"]
             if isinstance(proof, dict) and "process_proof" not in proof:
                 raise TaskError("Cleanup claim predates the registered-shell process proof; preserve it for inspection")
-            if (set(proof) != {"process_proof", "workspace", "panes", "shells"}
-                    or type(proof["process_proof"]) is not int or proof["process_proof"] != 1
+            expected_fields = {"process_proof", "workspace", "panes", "shells"}
+            if proof.get("process_proof") == 2:
+                expected_fields.add("families")
+                validate_agent_runtime(proof)
+            if (set(proof) != expected_fields
+                    or type(proof["process_proof"]) is not int or proof["process_proof"] not in {1, 2}
                     or type(proof["workspace"]) is not bool
                     or not isinstance(proof["panes"], list) or not isinstance(proof["shells"], dict)
                     or any(not pid.isdecimal() or type(started) is not int or started <= 0
@@ -1157,19 +1204,71 @@ def check_task(record, git, herdr, *, closed):
     return present is not None, bool(branches)
 
 
+def validate_agent_runtime(proof):
+    """Strict bounded identities retained even after the execution is removed."""
+    if (set(proof) != {"process_proof", "workspace", "panes", "shells", "families"}
+            or proof["process_proof"] != 2 or proof["workspace"] is not True
+            or not isinstance(proof["families"], dict) or not proof["families"]
+            or len(proof["families"]) > 256
+            or {p["pane_id"] for p in proof["panes"]} != set(proof["families"])):
+        raise ValueError("invalid owned agent runtime")
+    seen = set()
+    for pane in proof["panes"]:
+        if (set(pane) != {"workspace_id", "pane_id", "terminal_id", "cwd", "shell_argv"}
+                or any(not isinstance(pane[k], str) or not pane[k] for k in
+                       ("workspace_id", "pane_id", "terminal_id", "cwd"))):
+            raise ValueError("invalid owned pane")
+        family = proof["families"][pane["pane_id"]]
+        if (set(family) != {"shell", "foreground", "shell_argv", "members"}
+                or any(type(family[k]) is not int or family[k] <= 0 for k in ("shell", "foreground"))
+                or not isinstance(family["members"], dict) or not 1 <= len(family["members"]) <= 256
+                or str(family["shell"]) not in family["members"]
+                or str(family["foreground"]) not in family["members"]
+                or family["shell_argv"] != pane["shell_argv"] or seen & family["members"].keys()):
+            raise ValueError("invalid owned family")
+        shell_executable(family["shell_argv"])
+        seen.update(family["members"])
+        for pid, member in family["members"].items():
+            if (not pid.isdecimal() or int(pid) <= 0
+                    or set(member) != {"started", "parent", "group", "session", "terminal", "exe", "argv"}
+                    or any(type(member[k]) is not int or member[k] < 0
+                           for k in ("parent", "group", "session", "terminal"))
+                    or type(member["started"]) is not int or member["started"] <= 0
+                    or not isinstance(member["exe"], str) or not Path(member["exe"]).is_absolute()
+                    or not isinstance(member["argv"], str) or not member["argv"].endswith("\0")):
+                raise ValueError("invalid retained process identity")
+    if proof["shells"] != {str(f["shell"]): f["members"][str(f["shell"])]["started"]
+                           for f in proof["families"].values()}:
+        raise ValueError("inconsistent retained shells")
+
+
 def finish(record, journal, git, herdr, registry, identities):
+    owned_agents = record["runtime"].get("process_proof") == 2
+    stop_requested = False
+
+    def observe_runtime():
+        deadline = time.monotonic() + (3 if owned_agents and stop_requested else 0)
+        while True:
+            try:
+                return runtime(record, herdr, identities, stop_agents=True)
+            except TaskError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.05)
+
     def guard():
         if journal.read() != record:
             raise TaskError("Forced cleanup journal changed during disposal")
         git.check_base(record["base"])
         verify_contexts(record, registry)
         check_roots(record, git)
-        observed = runtime(record, herdr, identities)
+        observed = observe_runtime()
         if record["workspace_state"] == "closed":
             if observed["workspace"] or observed["panes"]:
                 raise TaskError("Selected workspace reappeared after closure")
         elif observed != record["runtime"]:
-            if record["workspace_state"] != "closing" or observed["workspace"] or observed["panes"]:
+            if (record["workspace_state"] != "closing"
+                    or not owned_agents and (observed["workspace"] or observed["panes"])):
                 raise TaskError("Selected workspace runtime changed; cleanup refused")
         present, branch = check_task(record, git, herdr, closed=not observed["workspace"])
         saved = PublicationStore(Path(record["path"])).read() if present else None
@@ -1202,7 +1301,7 @@ def finish(record, journal, git, herdr, registry, identities):
                       *(Path(root["path"]) for root in record["roots"])])
         # OS evidence must be the last guard, after remote reads, Git commands,
         # directory walks and mount checks, immediately before the mutation.
-        if runtime(record, herdr, identities) != observed:
+        if observe_runtime() != observed:
             raise TaskError("Selected execution runtime changed before removal")
         return present, branch, observed
 
@@ -1213,6 +1312,7 @@ def finish(record, journal, git, herdr, registry, identities):
         _, _, observed = guard()
         if observed["workspace"]:
             try:
+                stop_requested = True
                 result = herdr.workspace_command("close", record["workspace_id"])
                 if result.get("workspace_id") is None:
                     raise HerdrResponseError("Herdr close response omitted the workspace identity")
@@ -1260,7 +1360,7 @@ def finish(record, journal, git, herdr, registry, identities):
                 check_mounts([Path(record["path"]), Path(record["git_dir"])])
                 # Repository admission can wait; refresh the unchanged Linux
                 # stopped-execution proof after that wait, last before removal.
-                if runtime(record, herdr, identities) != observed:
+                if observe_runtime() != observed:
                     raise TaskError("Selected execution runtime changed before removal")
                 git.command("worktree", "remove", "--force", "--", record["path"])
         present, _ = check_task(record, git, herdr, closed=True)
@@ -1283,6 +1383,8 @@ def finish(record, journal, git, herdr, registry, identities):
     registry.retire_execution(record["contexts"], record["at"])
     guard()
     record["contexts"] = [registry.disposal_tombstone(c, record["at"]) for c in record["contexts"]]
+    if owned_agents:
+        record["agent_retirement"] = record["runtime"]
     record.update(state="complete", runtime=None)
     journal.write(record)
 
