@@ -281,6 +281,23 @@ The initial implementation counts as one pass; review counts begin when review r
 Use `--json` for the combined structured report. See the
 [loop reference](docs/lifecycle.md#task-loop) for checkpoints, bounds, and recovery.
 
+### Inspect local task status
+
+```sh
+task status DEV-7
+task status DEV-7 --json
+task status --all
+task status --all --json
+```
+
+Status combines saved loop, review, integration, publication, and cleanup evidence
+with exact checkout/context identities. It is read-only and does not contact
+Linear, GitHub, or agents. The overview groups registered AWL task workspaces by
+configured Linear project; CLEAN and published tasks stay visible until workspace
+cleanup. Unavailable discovery and ambiguous project mappings are reported explicitly.
+Issue lookup also shows bounded saved history for diagnostic inspection. See the
+[status contract](docs/lifecycle.md#task-status) for JSON, evidence limits, and operator hints.
+
 ### Find your conversations
 
 ```sh

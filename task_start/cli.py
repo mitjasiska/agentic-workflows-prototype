@@ -23,6 +23,7 @@ from .publish import publish
 from .integrate import abandon_integration, integrate
 from .preparation import check_issue_structure, prepare_task
 from .workspace import Git, Herdr, slice_slug
+from .status import task_status
 
 
 def issue_identifier(value: str) -> str:
@@ -60,6 +61,10 @@ def parser() -> argparse.ArgumentParser:
     contexts = commands.add_parser("contexts", help="Inspect machine-local workflow contexts (read-only)")
     contexts.add_argument("issue", nargs="?", type=issue_identifier)
     contexts.add_argument("--all", action="store_true", help="Include retired contexts")
+    status = commands.add_parser("status", help="Inspect task state and bounded saved history (read-only)")
+    status.add_argument("issue", nargs="?", type=issue_identifier)
+    status.add_argument("--all", action="store_true", help="List exactly registered AWL task workspaces by configured Linear project")
+    status.add_argument("--json", action="store_true", help="Print the versioned canonical status projection")
     review_command = commands.add_parser("review", help="Run a fresh independent task review or an explicit re-review")
     review_command.add_argument("issue", type=issue_identifier)
     review_command.add_argument("--resume", metavar="REVIEW_CONTEXT_ID")
@@ -364,6 +369,11 @@ def main(argv: list[str] | None = None) -> int:
             print(cleanup(args.issue, force=args.force, branch=args.branch))
         elif args.command == "contexts":
             print(inspect_contexts(args.issue, include_retired=args.all))
+        elif args.command == "status":
+            if bool(args.issue) == args.all:
+                raise TaskError("status requires either ISSUE or --all")
+            result = task_status(args.issue)
+            print(json.dumps(result.as_dict(), ensure_ascii=True, sort_keys=True) if args.json else result.render())
         elif args.command == "review":
             result = review(args.issue, resume=args.resume, agent_kind=args.agent_kind,
                             model=args.model, mode=args.mode, timeout=args.timeout)
