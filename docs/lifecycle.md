@@ -12,9 +12,93 @@ Command behavior, invariants, and refusal/retry cases for Agentic Workflows Lite
 - [Failure and retry behavior](#failure-and-retry-behavior)
 - [Fresh review and exact resume](#task-review)
 - [Automatic implementation/review loop](#task-loop)
+- [Read-only task status and history](#task-status)
 - [Reviewed PR publishing](#task-pr)
 - [Isolated conflict recovery](#task-integrate)
 - [Cleanup and partial failures](#task-cleanup)
+
+## Task status
+
+`task status ISSUE` and `task status ISSUE --json` inspect local evidence without
+changing workflow state. `task status --all` (also with `--json`) is the dashboard
+discovery seam. These commands use the same canonical projection in
+[`status.py`](../task_start/status.py); text rendering contains no separate workflow
+interpretation. They do not fetch Linear/GitHub, poll provider history, take
+controller ownership, launch agents, repair records, or create state files. Reading
+Git-visible content for review validity can take time on large checkouts.
+
+The overview starts with AWL implementation/review context bindings and requires
+an exact, currently registered Herdr workspace, matching endpoint, repository
+common directory, checkout, branch, and Herdr/Git worktree registration. Labels
+are not identity evidence. Unmanaged workspaces and retired-only contexts are not
+overview tasks. A CLEAN loop or published/merged branch is not a removal signal:
+registration keeps an otherwise matching execution visible. Successful workspace
+cleanup removes it. Explicit issue lookup includes saved retired bindings and
+available cleanup evidence, even when the checkout no longer exists. Multiple
+executions are separate entries; no newest-workspace heuristic selects one.
+
+Grouping uses the private project registry and the configured `projects_root` to
+match the exact permanent repository path, together with the saved base branch
+when available. The configured Linear project name is the project identity. A
+unique matching mapping is `verified`; missing configuration, multiple mappings,
+or conflicts leave membership `unverified`. This is local configured membership,
+not a claim that Linear has been refreshed. Repository basename/display-label
+guesses are never used. Status only needs the repository location from machine
+configuration, not a Linear credential or agent configuration.
+
+JSON version 1 has `selection`, `issue`, `discovery`, `projects`,
+`unverified_project_tasks`, and `tasks`. Project groups contain indexes into the
+deterministically ordered task array. Each task contains project/repository and
+workspace identity, selected role contexts, `state`/`phase`, observed controller
+ownership, loop and review evidence, acceptance validity, integration/publication,
+cleanup, uncertainties, guidance, and history. Unknown scalar identities are
+`null`; missing acceptance is `absent`, distinct from `invalid` or `unverified`.
+`valid` acceptance means its exact local context, content/index/history and pinned
+base still match. It is not authorization to publish or evidence of passing CI.
+Publication reflects persisted delivery/PR evidence; remote PR state and merges
+are not refreshed or inferred from ancestry. A retained `publication.state=complete`
+can describe an older cycle. `publication.current_acceptance_published` is true
+only when the current valid acceptance and content match the completed cycle;
+a newly accepted follow-up remains in review until its own publication is proven.
+Consumed standalone reviews remain history; the current loop owns its reviewer
+and outcome. Conflicting outcomes or provenance for the accepted pass make its
+acceptance unverified. History and status omit prompts, transcripts, finding prose,
+publication bodies, and credentials.
+
+`discovery.state=available` with `tasks=[]` is a successful empty overview.
+`unavailable` uses `tasks=null` for the overview and an unknown workspace count
+when Herdr cannot be inspected. `uncertain` can contain a partial set with explicit
+excluded-execution diagnostics. Consumers should preserve their previous view on
+unavailable/uncertain discovery rather than treat omissions as cleanup. Explicit
+issue lookup can still return saved diagnostics during a Herdr outage. A valid
+status invocation exits zero even when its model reports uncertainty; syntax or
+selector errors exit nonzero. Consumers must inspect the model's state.
+
+Operator hints are read-only. A running/ready loop with an observed owning
+controller does not require intervention. An unowned controller lock plus a
+validated active claim, retained delivery coordinates/receipt and matching context
+identity, HEAD, base and scope can suggest repeating `task loop ISSUE` to **try
+observation of the original pass**. This never resends it, and later provider/runtime verification
+can still refuse recovery. Review additionally requires the entire pinned snapshot;
+uncommitted implementation edits are allowed. Known drift calls for inspection
+without invalidating or rewriting the checkpoint. A missing lock, receipt, `idle`
+agent, timestamp, or saved `running` flag alone cannot establish that path. Deliberate `paused` state
+suggests `--continue`; uncertain/conflicting evidence calls for manual inspection.
+Trust/setup requires action in the original pane/controller. Abort/discard hints
+are explicitly conditional on deliberate abandonment and the commands' own
+ownership/publication checks; they do not certify that cleanup is safe.
+
+History is an allowlisted view of the current checkpoint's ordered passes, the
+latest standalone review, selected context allocation timestamps, current
+acceptance, integration/rebase, the last 12 saved publication cycles, and matching
+cleanup evidence. At most 64 entries are returned, with `truncated` indicating
+omission. `ordering=source_order` preserves order **within each source**; it does
+not fabricate a cross-source chronology. Missing timestamps remain `null`.
+Interrupted/pause/abort states describe retained boundaries, not every controller
+transition that ever occurred. A replacement loop replaces its checkpoint history.
+No journal or global task-history database is introduced: task Git metadata goes
+away with its worktree; existing registry retirement and cleanup tombstone policies
+remain owned by their lifecycle components.
 
 ## Task start
 

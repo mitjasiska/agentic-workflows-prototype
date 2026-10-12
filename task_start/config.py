@@ -108,6 +108,19 @@ def load_local(path: Path | None = None, *, no_agent: bool = False) -> LocalConf
         raise TaskError("projects_root could not be resolved") from None
 
 
+def status_projects_root(path: Path | None = None) -> Path:
+    """Read only the configured repository location; status needs no credentials.
+
+    Do not use load_local here: missing agent/Linear settings must not prevent
+    offline inspection, and no credential is returned to the status read model.
+    """
+    data = read_toml(path or Path.home() / CONFIG_DIRECTORY / "config.toml")
+    root = Path(required_text(data, "projects_root")).expanduser()
+    if not root.is_absolute():
+        raise TaskError("projects_root must be absolute")
+    return root.resolve()
+
+
 def issue_structure_config(data: dict) -> IssueStructureConfig:
     if not isinstance(data, dict) or set(data) - {"mode", "block_name"}:
         raise TaskError("linear.issue_structure must be a table supporting only mode and block_name")

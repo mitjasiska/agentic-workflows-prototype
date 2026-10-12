@@ -96,6 +96,12 @@ remote publication eligibility. Confirming a pushed task SHA and PR remains vali
 when main subsequently advances. See
 [integration lifecycle and recovery](lifecycle.md#task-integrate).
 
+[`status.py`](../task_start/status.py) combines these existing stores through one
+read-only projection shared by CLI text and versioned JSON. It verifies local
+identity and registered Herdr membership without invoking lifecycle controllers
+or creating a history store. See the [status contract](lifecycle.md#task-status)
+for discovery, project grouping, operator guidance, and bounded evidence history.
+
 ## Handoff transport
 
 Codex is launched with `--cd` and uses its local app-server API for a readiness
