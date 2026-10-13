@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 
@@ -13,6 +13,7 @@ from task_start import TaskError, cli
 from task_start.agent import LaunchResult
 from task_start.config import LocalConfig, Project
 from task_start.github import check_history, repository_name
+from task_start.preparation import prepare_task
 from task_start.workspace import Git, Herdr
 import test_task_start as baseline
 
@@ -24,7 +25,9 @@ class LifecycleTests(unittest.TestCase):
     prepare = baseline.HerdrTests.prepare
 
     def responses(self, action="opened"):
-        return patch.object(self.herdr, "command", side_effect=[self.listing, self.result(action)])
+        # Prepare selects once with remote discovery, then rechecks local state
+        # under admission before opening or creating the selected workspace.
+        return patch.object(self.herdr, "command", side_effect=[self.listing, self.listing, self.result(action)])
 
     def test_historical_workspace_never_opened_or_deleted(self):
         self.existing()
@@ -61,7 +64,9 @@ class LifecycleTests(unittest.TestCase):
         with self.responses() as command:
             workspace = self.herdr.prepare(self.git, "main", "dev-7-codex-handoff", "DEV-7", "codex-handoff")
         self.assertEqual(workspace.branch, "dev-7-codex-handoff")
-        command.assert_called_with("open", "--path", str(self.tree_path), "--label", "DEV-7 / codex-handoff", "--focus")
+        self.assertEqual(command.call_args_list, [call("list"), call("list"),
+            call("open", "--path", str(self.tree_path), "--label", "DEV-7 / codex-handoff", "--focus")])
+        self.git.save_scope.assert_called_once_with(self.tree_path, workspace.branch, "DEV-7", "codex-handoff")
         with self.responses() as command, self.assertRaisesRegex(TaskError, "Ambiguous.*codex-handoff.*lifecycle"):
             self.prepare()
         command.assert_called_once_with("list")
@@ -72,35 +77,71 @@ class LifecycleTests(unittest.TestCase):
         old_git = copy.deepcopy(self.git.worktrees.return_value)
         self.git.remote_branches.return_value = [self.branch]
         self.tree["branch"] = "dev-7-second"
+        self.tree_path = self.repo / "second"
+        self.tree_path.mkdir()
+        self.tree["path"] = str(self.tree_path)
         self.listing["worktrees"] = [old_tree]
-        self.git.worktrees.side_effect = [old_git, old_git + [dict(worktree=str(self.tree_path), branch="refs/heads/dev-7-second")]]
+        self.git.worktrees.side_effect = [old_git, old_git,
+            old_git + [dict(worktree=str(self.tree_path), branch="refs/heads/dev-7-second")]]
         with self.responses("created") as command:
             result = self.herdr.prepare(self.git, "main", "dev-7-second", "DEV-7", "second")
         self.assertEqual(result.branch, "dev-7-second")
-        command.assert_called_with("create", "--base", "main", "--branch", "dev-7-second", "--label", "DEV-7 / second", "--focus")
+        self.assertEqual(command.call_args_list, [call("list"), call("list"),
+            call("create", "--base", "main", "--branch", "dev-7-second", "--label", "DEV-7 / second", "--focus")])
+        self.git.save_scope.assert_called_once_with(self.tree_path, "dev-7-second", "DEV-7", "second")
 
     def test_single_slice_without_selector_is_unambiguous(self):
         self.tree["branch"] = "dev-7-slice"
         self.existing()
         self.git.resolve_scope.return_value = "slice"
-        with self.responses():
+        with self.responses() as command:
             selected = self.prepare()
         self.assertEqual(selected.branch, "dev-7-slice")
         self.assertEqual(selected.slice, "slice")
+        self.assertEqual(command.call_args_list, [call("list"), call("list"),
+            call("open", "--path", str(self.tree_path), "--label", "DEV-7 / slice", "--focus")])
 
     def test_unknown_scope_refuses_before_open_or_metadata_write(self):
         self.existing()
         self.git.resolve_scope.side_effect = TaskError("Workspace scope is unknown; rerun with explicit --slice")
         with self.responses() as command, self.assertRaisesRegex(TaskError, "explicit --slice"):
             self.prepare()
-        command.assert_called_once_with("list")
+        self.assertEqual(command.call_args_list, [call("list"), call("list")])
         self.git.save_scope.assert_not_called()
 
     def test_scope_persistence_failure_never_returns_ready_workspace(self):
         self.existing()
         self.git.save_scope.side_effect = TaskError("Scope metadata could not be saved")
-        with self.responses(), self.assertRaisesRegex(TaskError, "could not be saved"):
-            self.prepare()
+        linear = Mock()
+        # Shared startup also claims the existing selection before updating base.
+        with patch.object(self.herdr, "command", side_effect=[self.listing, self.listing, self.listing,
+                          self.result("opened")]) as command, self.assertRaisesRegex(TaskError, "could not be saved"):
+            prepare_task(baseline.ISSUE, baseline.PROJECT, linear, self.git, lambda: self.herdr,
+                         check_configuration=Mock())
+        self.assertEqual(command.call_args_list, [call("list"), call("list"), call("list"),
+            call("open", "--path", str(self.tree_path), "--label", "DEV-7", "--focus")])
+        self.git.save_scope.assert_called_once_with(self.tree_path, self.branch, "DEV-7", None)
+        self.assertEqual(self.git.worktrees.call_count, 4)  # Claim, selection, admission, confirmation.
+        linear.start.assert_not_called()
+
+    def test_selection_changes_after_claim_or_before_admission_refuse_mutation(self):
+        self.existing()
+        changed = copy.deepcopy(self.listing)
+        changed["worktrees"][0]["open_workspace_id"] = "replacement"
+        for phase, responses in [
+            ("after claim", [self.listing, changed]),
+            ("before admission", [self.listing, self.listing, changed]),
+        ]:
+            with self.subTest(phase=phase):
+                linear = Mock()
+                with patch.object(self.herdr, "command", side_effect=responses) as command, \
+                        self.assertRaisesRegex(TaskError, "Workspace selection changed during preparation"):
+                    prepare_task(baseline.ISSUE, baseline.PROJECT, linear, self.git, lambda: self.herdr,
+                                 check_configuration=Mock())
+                self.assertEqual(command.call_args_list, [call("list")] * len(responses))
+                self.git.resolve_scope.assert_not_called()
+                self.git.save_scope.assert_not_called()
+                linear.start.assert_not_called()
 
     def test_remote_other_branch_makes_no_slice_ambiguous(self):
         self.existing()
@@ -112,8 +153,11 @@ class LifecycleTests(unittest.TestCase):
     def test_same_live_remote_branch_does_not_prevent_reuse(self):
         self.existing()
         self.git.remote_branches.return_value = [self.branch]
-        with self.responses():
+        with self.responses() as command:
             self.assertEqual(self.prepare().branch, self.branch)
+        self.assertEqual(command.call_args_list, [call("list"), call("list"),
+            call("open", "--path", str(self.tree_path), "--label", "DEV-7", "--focus")])
+        self.git.remote_branches.assert_called_once_with("DEV-7")
 
     def test_stable_herdr_ids_and_checkout_are_validated(self):
         self.existing()
@@ -124,21 +168,41 @@ class LifecycleTests(unittest.TestCase):
                    lambda r: r["workspace"]["worktree"].update(checkout_path="/wrong"),
                    lambda r: r["workspace"]["worktree"].update(repo_root="/wrong"),
                    lambda r: r.pop("root_pane")]
-        for change in changes:
-            response = self.result("opened")
-            change(response)
-            with patch.object(self.herdr, "command", side_effect=[self.listing, response]), self.assertRaises(TaskError):
-                self.prepare()
+        for index, change in enumerate(changes):
+            with self.subTest(change=index):
+                response = self.result("opened")
+                change(response)
+                with patch.object(self.herdr, "command", side_effect=[self.listing, self.listing, response]) as command, \
+                        self.assertRaisesRegex(TaskError, "Herdr did not confirm the requested workspace and focus"):
+                    self.prepare()
+                self.assertEqual(command.call_args_list, [call("list"), call("list"),
+                    call("open", "--path", str(self.tree_path), "--label", "DEV-7", "--focus")])
+                self.git.save_scope.assert_not_called()
+
+    def test_invalid_listed_workspace_id_refuses_before_open(self):
+        self.existing()
+        for workspace_id in ("", " ", 123):
+            with self.subTest(workspace_id=workspace_id), patch.dict(self.tree, open_workspace_id=workspace_id):
+                with self.responses() as command, self.assertRaisesRegex(TaskError, "Unexpected Herdr worktree list"):
+                    self.prepare()
+                command.assert_called_once_with("list")
+                self.git.save_scope.assert_not_called()
 
     def test_existing_workspace_id_cannot_change(self):
         self.existing()
         self.tree["open_workspace_id"] = "previous"
-        with self.responses(), self.assertRaisesRegex(TaskError, "different workspace ID"):
+        with self.responses() as command, self.assertRaisesRegex(TaskError, "different workspace ID"):
             self.prepare()
+        self.assertEqual(command.call_args_list, [call("list"), call("list"),
+            call("open", "--path", str(self.tree_path), "--label", "DEV-7", "--focus")])
+        self.git.save_scope.assert_not_called()
 
     def test_git_must_confirm_new_worktree_before_ready(self):
-        with self.responses("created"), self.assertRaisesRegex(TaskError, "Git did not confirm"):
+        with self.responses("created") as command, self.assertRaisesRegex(TaskError, "Git did not confirm"):
             self.prepare()
+        self.assertEqual(command.call_args_list, [call("list"), call("list"),
+            call("create", "--base", "main", "--branch", self.branch, "--label", "DEV-7", "--focus")])
+        self.git.save_scope.assert_not_called()
 
 
 class GitHubHistoryTests(unittest.TestCase):
@@ -335,7 +399,9 @@ class RemoteGitIntegrationTests(unittest.TestCase):
             workspace = execution.workspace
             self.assertEqual((workspace.path, workspace.branch, workspace.slice), (path, branch, "importer"))
             self.assertIn("Slice: importer\nImplement only this slice of the task.", execution.handoff)
-        self.assertEqual(operations, ["list", "create", "list", "open"])
+        # Each start claims before the base update, resolves with remotes, and
+        # revalidates under admission before the single workspace mutation.
+        self.assertEqual(operations, ["list", "list", "list", "create", "list", "list", "list", "open"])
         self.assertEqual(selected[0].workspace_id, selected[1].workspace_id)
         self.assertEqual(len(self.git.worktrees()), 2)
         record = self.git.scope_file(path)

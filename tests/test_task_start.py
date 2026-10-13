@@ -349,16 +349,40 @@ class GitTests(unittest.TestCase):
 
     def test_wrong_head_after_merge_stops_before_herdr(self):
         self.answers[("rev-parse", "--verify", "HEAD^{commit}")] = "old-head\n"
-        with patch("task_start.cli.load_local", return_value=LOCAL), \
-                patch("task_start.cli.load_projects", return_value=[PROJECT]), \
+        herdr = Herdr(self.repo)
+        listing = {"source": {"repo_root": str(self.repo)}, "worktrees": []}
+        with patch("task_start.cli.load_local", return_value=replace(LOCAL, projects_root=self.repo.parent)), \
+                patch("task_start.cli.load_projects", return_value=[replace(PROJECT, repo_name=self.repo.name)]), \
                 patch("task_start.cli.Linear") as linear, \
                 patch("task_start.cli.Git", return_value=self.git), \
-                patch("task_start.cli.Herdr") as herdr:
+                patch("task_start.cli.Herdr", return_value=herdr) as factory, \
+                patch.object(herdr, "command", return_value=listing) as command, \
+                patch.object(herdr, "prepare", wraps=herdr.prepare) as prepare:
             linear.return_value.get_issue.return_value = ISSUE
+            operations = Mock()
+            operations.attach_mock(command, "herdr")
+            operations.attach_mock(self.runner, "git")
             with self.assertRaisesRegex(TaskError, "did not reach"):
                 cli.start("DEV-7", no_agent=True)
-            herdr.assert_not_called()
+            # Construction and read-only ownership selection precede the base
+            # update. A failed HEAD check must prevent preparation/mutation.
+            factory.assert_called_once_with(self.repo)
+            command.assert_called_once_with("list")
+            prepare.assert_not_called()
             linear.return_value.start.assert_not_called()
+        events = []
+        for operation in operations.mock_calls:
+            if operation[0] == "herdr":
+                events.append("list")
+            else:
+                args = operation.args[0][3:]
+                if args[0] == "fetch":
+                    events.append("fetch")
+                elif "merge" in args:
+                    events.append("merge")
+                elif args == ["rev-parse", "--verify", "HEAD^{commit}"]:
+                    events.append("confirm HEAD")
+        self.assertEqual(events, ["list", "fetch", "merge", "confirm HEAD"])
 
     def test_dirty_checkout_after_merge_is_rejected(self):
         fake = self.runner.side_effect
@@ -436,6 +460,8 @@ class HerdrTests(unittest.TestCase):
         self.existing()
         with patch("task_start.workspace.run", side_effect=[json.dumps({"result": self.listing}), json.dumps({"result": self.listing}), json.dumps({"result": self.result("opened")})]) as runner:
             self.assertEqual(self.prepare().branch, "dev-7-previous-title")
+        self.assertEqual([c.args[0][2] for c in runner.call_args_list], ["list", "list", "open"])
+        self.assertEqual(runner.call_args_list[1], runner.call_args_list[0])
         self.assertEqual(runner.call_args.args[0], ["herdr", "worktree", "open", "--cwd", str(self.repo), "--path", str(self.tree_path), "--label", "DEV-7", "--focus"])
 
     def test_branch_only_and_remote_only_refused(self):
@@ -495,11 +521,12 @@ class OrchestrationTests(unittest.TestCase):
 
     def test_order_and_concise_output(self):
         operations = Mock()
+        operations.attach_mock(self.herdr.claim_preparation, "claim")
         operations.attach_mock(self.git.update_base, "base")
         operations.attach_mock(self.herdr.prepare, "workspace")
         operations.attach_mock(self.linear.start, "status")
         output = cli.start("DEV-7")
-        self.assertEqual([call[0] for call in operations.mock_calls], ["base", "workspace", "status"])
+        self.assertEqual([call[0] for call in operations.mock_calls], ["claim", "base", "workspace", "status"])
         self.assertEqual(len(output.splitlines()), 7)
         self.assertIn("Linear: In Progress", output)
         self.assertNotIn("test-placeholder", output)
