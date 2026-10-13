@@ -1,0 +1,71 @@
+#!/bin/sh
+# Browser identity is resolved only when this command is invoked.
+set -eu
+LC_ALL=C
+export LC_ALL
+
+fail() { printf 'ab-worktree: %s\n' "$*" >&2; exit 2; }
+usage() {
+    cat <<'EOF'
+Usage: ab-worktree {pi|codex} [--instance ID] [--] COMMAND [ARGS...]
+       ab-pi [--instance ID] [--] COMMAND [ARGS...]
+       ab-codex [--instance ID] [--] COMMAND [ARGS...]
+ID: 1-64 ASCII letters, digits, dots, underscores or hyphens; start with a letter/digit.
+Remaining arguments go to agent-browser with an explicit worktree session.
+EOF
+}
+case "${1-}" in --help|-h) usage; exit 0 ;; esac
+case "${0##*/}" in
+    ab-pi) agent=pi ;;
+    ab-codex) agent=codex ;;
+    *)
+        case "${1-}" in pi|codex) agent=$1; shift ;; *) fail 'expected agent type pi or codex (see --help)' ;; esac
+        ;;
+esac
+instance=
+if [ "${1-}" = --instance ]; then
+    [ "$#" -ge 2 ] || fail '--instance requires an ID'
+    instance=$2
+    case "$instance" in
+        ''|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) fail 'invalid instance ID (see --help)' ;;
+    esac
+    [ "${#instance}" -le 64 ] || fail 'instance ID exceeds 64 characters'
+    shift 2
+fi
+if [ "${1-}" = -- ]; then shift; fi
+[ "$#" -gt 0 ] || fail 'expected an agent-browser command (see --help)'
+# agent-browser parses global options even after the command. Never let forwarded
+# options override the identity selected here, even after --.
+for argument do
+    case "$argument" in
+        --session|--session=*) fail '--session is owned by the helper' ;;
+        --instance|--instance=*) fail '--instance must precede the browser command' ;;
+    esac
+done
+for tool in git sha256sum agent-browser; do
+    command -v "$tool" >/dev/null 2>&1 || fail "required executable missing from PATH: $tool"
+done
+# Inherited Git selectors must not redirect identity to another checkout.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_CEILING_DIRECTORIES GIT_DISCOVERY_ACROSS_FILESYSTEM
+inside=$(git rev-parse --is-inside-work-tree 2>/dev/null) || fail 'current directory is not a Git worktree'
+[ "$inside" = true ] || fail 'current directory is not inside a Git worktree'
+# Append a sentinel so command substitution cannot strip newline bytes from the
+# path. Remove only the command's one output newline and the sentinel afterward.
+line_suffix='
+.'
+root=$(git rev-parse --show-toplevel 2>/dev/null && printf '.') || fail 'cannot resolve Git worktree root'
+root=${root%"$line_suffix"}
+[ -n "$root" ] || fail 'Git returned an empty worktree root'
+root=$(CDPATH= cd -P -- "$root" && pwd -P && printf '.') || fail 'cannot resolve physical worktree root'
+root=${root%"$line_suffix"}
+# NUL delimiters keep optional IDs separate from paths and agent names. Use a
+# bounded digest to leave room for agent-browser's Linux Unix-socket path.
+digest=$(printf '%s\000%s\000%s\000' "$root" "$agent" "$instance" | sha256sum) || fail 'cannot hash worktree identity'
+digest=${digest%% *}
+case "$digest" in ''|*[!0-9a-f]*) fail 'invalid identity digest' ;; esac
+[ "${#digest}" -eq 64 ] || fail 'invalid identity digest length'
+session="awl-$agent-$(printf '%.32s' "$digest")"
+agent-browser --session "$session" "$@" && exit 0
+status=$?
+printf 'ab-worktree: agent-browser failed for session %s (exit %s)\n' "$session" "$status" >&2
+exit "$status"
