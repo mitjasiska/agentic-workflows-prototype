@@ -740,12 +740,14 @@ class LocalGitIntegrationTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         root = Path(self.temp.name).resolve()
         self.enterContext(patch("task_start.contexts.registry_path", return_value=root / "contexts.sqlite3"))
+        self.enterContext(patch("task_start.github.cli_credential", return_value=None))
         self.repo, self.remote = root / "checkout", root / "upstream"
         # Isolate tests from user Git configuration, hooks, signing and identity.
         self.enterContext(patch.dict(os.environ, {
             "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.invalid",
             "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.invalid",
+            "GH_TOKEN": "synthetic-test-github-token", "GITHUB_TOKEN": "",
         }))
         self.command(root, "init", "--initial-branch=main", str(self.remote))
         (self.remote / ".gitignore").write_text("ignored.txt\n")

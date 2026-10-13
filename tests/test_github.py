@@ -19,6 +19,7 @@ SECRET = "test-secret-must-not-appear"
 class GitHubRequestTests(unittest.TestCase):
     def setUp(self):
         self.enterContext(patch.dict(os.environ, {"GH_TOKEN": SECRET, "GITHUB_TOKEN": ""}))
+        self.cli = self.enterContext(patch("task_start.github.cli_credential", return_value=None))
 
     def failure(self, error, *, method="POST"):
         with patch("task_start.github.urlopen", side_effect=error) as transport:
@@ -154,7 +155,7 @@ class GitHubRequestTests(unittest.TestCase):
             with self.assertRaises(TaskError) as caught:
                 request("owner/repo/pulls", "dev-7-task")
         self.assertIn("unauthenticated", str(caught.exception))
-        self.assertIn("Set GH_TOKEN or GITHUB_TOKEN", str(caught.exception))
+        self.assertIn("gh auth login --hostname github.com", str(caught.exception))
         self.assertNotIn(SECRET, str(caught.exception))
 
     def test_malformed_selected_credential_is_refused_without_fallback_or_disclosure(self):

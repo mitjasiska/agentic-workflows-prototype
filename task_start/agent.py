@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 from . import AgentNotReady, HerdrResponseError, TaskError
 from .codex_rpc import CodexRPC, validate_readiness_only
 from .config import AgentConfig
+from .credentials import agent_environment, agent_shell_prefix
 from .linear import Issue
 from .integration_process import stopped_checkout
 from .sessions import SessionInvalid, has_immutable_identity, merge_session, same_session, session_identity
@@ -140,6 +141,7 @@ class HerdrAgentAdapter:
 
     kind = ""
     display_name = "Agent"
+    SHELL_READY_TIMEOUT = 30
 
     def __init__(self, options: AgentOptions):
         if options.kind != self.kind:
@@ -215,6 +217,7 @@ class HerdrAgentAdapter:
             f"{workspace.path}:{workspace.pane_id}".encode()).hexdigest()[:20]
 
     def start_agent(self, workspace: Workspace, args: list[str], *, review: bool = False) -> dict:
+        self.filter_shell_credentials(workspace)
         result = self.command("agent", "start", self.agent_name(workspace),
                               "--kind", self.kind, "--pane", workspace.pane_id,
                               "--timeout", "30000", "--", *args)
@@ -226,6 +229,60 @@ class HerdrAgentAdapter:
             raise AgentNotReady(f"{self.display_name} launch/readiness not confirmed: "
                                 f"status={result['agent']['agent_status']!r}", agent=result["agent"])
         return result["agent"]
+
+    def filter_shell_credentials(self, workspace: Workspace) -> None:
+        run(["herdr", "pane", "send-text", workspace.pane_id, agent_shell_prefix()],
+            env=agent_environment())
+
+    def clear_shell_input(self, workspace: Workspace) -> None:
+        # A prior interrupted launch can leave an executable fragment in the
+        # reusable shell's input buffer. Cancel it before adding the credential
+        # filter and Herdr's agent command (for example, stale `pi` + `codex`).
+        # Pane creation/labeling can finish while shell startup children (e.g.
+        # lesspipe) still occupy its foreground group. Wait for the same strict
+        # shell-only predicate before sending any input. Never retry input/start.
+        deadline = time.monotonic() + self.SHELL_READY_TIMEOUT
+        established_shell = None
+        last = "no completed process observation"
+
+        def timeout_error():
+            return TaskError(f"Timed out waiting for an interactive shell prompt before launch; last observed {last}")
+
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise timeout_error()
+            try:
+                process = self.command("pane", "process-info", "--pane", workspace.pane_id,
+                                       timeout=remaining)["process_info"]
+            except TaskError:
+                if time.monotonic() >= deadline:
+                    raise timeout_error() from None
+                raise
+            foreground = process["foreground_processes"]
+            shell_pid = process["shell_pid"]
+            group = process["foreground_process_group_id"]
+            if (process["pane_id"] != workspace.pane_id
+                    or any(value is not None and (type(value) is not int or value <= 0)
+                           for value in (shell_pid, group))
+                    or not isinstance(foreground, list)
+                    or any(not isinstance(p, dict) or type(p.get("pid")) is not int or p["pid"] <= 0
+                           for p in foreground)):
+                raise ValueError("invalid or mismatched shell process observation")
+            last = (f"shell_pid={shell_pid}, foreground_group={group}, "
+                    f"foreground_pids={[p['pid'] for p in foreground]}")
+            # Transport/process scheduling can return even a ready observation
+            # after its timeout. Never accept it or send input beyond our bound.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise timeout_error()
+            if established_shell is not None and shell_pid != established_shell:
+                raise TaskError(f"Shell identity changed during pane readiness: {last}")
+            established_shell = shell_pid
+            if shell_pid is not None and group == shell_pid and [p["pid"] for p in foreground] == [shell_pid]:
+                break
+            time.sleep(min(0.25, remaining))
+        run(["herdr", "pane", "send-keys", workspace.pane_id, "ctrl+c"])
 
     def observe_agent(self, execution: AgentExecution, agent: dict,
                       previous: dict | None = None, *, expected_session=None, allow_absent=False) -> dict:
@@ -340,6 +397,7 @@ class HerdrAgentAdapter:
         try:
             if recreate:
                 self.check_target(execution.workspace, review=True)
+                self.clear_shell_input(execution.workspace)
                 self.start_agent(execution.workspace, self.resume_args(execution, reference), review=True)
             observed = self.command("agent", "get", execution.workspace.pane_id)["agent"]
             self.validate_agent(observed, execution.workspace, review=True)
@@ -371,7 +429,6 @@ class CodexAdapter(HerdrAgentAdapter):
     kind = "codex"
     display_name = "Codex"
     MODES = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
-    SHELL_READY_TIMEOUT = 30
     POST_TRUST_READY_TIMEOUT = 30
 
     def cleanup_provider_idle(self, workspace, reference):
@@ -536,56 +593,6 @@ class CodexAdapter(HerdrAgentAdapter):
                                 thread_id, turn, "id", "yes")
         except (KeyError, ValueError, TypeError, OSError):
             raise TaskError("Codex reviewer continuation was not confirmed; inspect the mapped pane/session") from None
-
-    def clear_shell_input(self, workspace: Workspace) -> None:
-        # A prior interrupted launch can leave an executable fragment in the
-        # reusable shell's input buffer. Cancel it so Herdr's canonical `codex`
-        # command cannot be appended to stale text (for example, `pi` + `codex`).
-        # Pane creation/labeling can finish while shell startup children (e.g.
-        # lesspipe) still occupy its foreground group. Wait for the same strict
-        # shell-only predicate before sending any input. Never retry input/start.
-        deadline = time.monotonic() + self.SHELL_READY_TIMEOUT
-        established_shell = None
-        last = "no completed process observation"
-
-        def timeout_error():
-            return TaskError(f"Timed out waiting for an interactive shell prompt before launch; last observed {last}")
-
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise timeout_error()
-            try:
-                process = self.command("pane", "process-info", "--pane", workspace.pane_id,
-                                       timeout=remaining)["process_info"]
-            except TaskError:
-                if time.monotonic() >= deadline:
-                    raise timeout_error() from None
-                raise
-            foreground = process["foreground_processes"]
-            shell_pid = process["shell_pid"]
-            group = process["foreground_process_group_id"]
-            if (process["pane_id"] != workspace.pane_id
-                    or any(value is not None and (type(value) is not int or value <= 0)
-                           for value in (shell_pid, group))
-                    or not isinstance(foreground, list)
-                    or any(not isinstance(p, dict) or type(p.get("pid")) is not int or p["pid"] <= 0
-                           for p in foreground)):
-                raise ValueError("invalid or mismatched shell process observation")
-            last = (f"shell_pid={shell_pid}, foreground_group={group}, "
-                    f"foreground_pids={[p['pid'] for p in foreground]}")
-            # Transport/process scheduling can return even a ready observation
-            # after its timeout. Never accept it or send input beyond our bound.
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise timeout_error()
-            if established_shell is not None and shell_pid != established_shell:
-                raise TaskError(f"Shell identity changed during pane readiness: {last}")
-            established_shell = shell_pid
-            if shell_pid is not None and group == shell_pid and [p["pid"] for p in foreground] == [shell_pid]:
-                break
-            time.sleep(min(0.25, remaining))
-        run(["herdr", "pane", "send-keys", workspace.pane_id, "ctrl+c"])
 
     def startup_command(self, group, operation, *args, deadline):
         """Retry malformed observation envelopes only, inside the pre-queue budget.
@@ -1311,6 +1318,7 @@ class PiAdapter(HerdrAgentAdapter):
         args = [executable, *self.launch_args(), "--mode", "rpc", "--no-session", "--no-tools"]
         try:
             result = subprocess.run(args, input=rpc_input, capture_output=True, cwd=workspace.path,
+                                    env=agent_environment(),
                                     timeout=30, check=False)
         except (OSError, subprocess.TimeoutExpired):
             raise TaskError("Pi model/mode preflight could not complete; check Pi authentication and configuration") from None
@@ -1368,6 +1376,7 @@ class PiAdapter(HerdrAgentAdapter):
             self.validate_model_mode(workspace)
             phase = "startup"
             self.check_target(workspace, review=execution.purpose in {"review", "integration"})
+            self.clear_shell_input(workspace)
             args = (self.review_args() if execution.purpose in {"review", "integration"} or execution.policy.get("session_reporting")
                     else self.launch_args())
             observed = self.observe_agent(execution, self.start_agent(workspace, args, review=execution.purpose in {"review", "integration"}))

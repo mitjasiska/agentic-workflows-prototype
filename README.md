@@ -54,13 +54,11 @@ Agent execution also needs an authenticated Codex or Pi CLI on `PATH`.
    `projects_root`, your Linear personal API key, and your `[agent]` selection.
    Keep this populated file private. The key needs issue/project/team-status
    read access and permission to update issues.
-4. For GitHub API access (`task pr` and PR-history checks), follow the
-   [persistent token setup](docs/configuration.md#persistent-github-token-on-posix).
-   Use [`config/secrets.example.env`](config/secrets.example.env) as the placeholder
-   template.
-   Store `GH_TOKEN` in `~/.agentic-workflows-lite/secrets.env` with mode `600`, and
-   source that file from `~/.bashrc`. Reload it in existing shells after token
-   changes. Git push still uses your separate SSH/HTTPS authentication.
+4. For private GitHub PR-history checks and `task pr`, use an existing `gh` login
+   or follow the [local authentication setup](docs/configuration.md#local-github-cli-authentication).
+   Explicit tokens can be scoped to one controller command. Agent launches omit
+   GitHub token variables. For encrypted Git keys, configure a shared
+   [SSH agent](docs/configuration.md#ssh-agent-on-linux) before starting Herdr.
 5. Add this repository to `PATH`, then start a task:
 
    ```sh

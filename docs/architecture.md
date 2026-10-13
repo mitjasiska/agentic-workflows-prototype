@@ -153,6 +153,10 @@ the adapter validates both reported working directories before submitting the fu
 handoff through `herdr agent prompt`. Herdr confirms prompt submission, but does
 not identify a Pi turn for that prompt. Both remain interactive sessions.
 
+Agent process launches filter controller GitHub token variables, including at the
+existing Herdr pane shell boundary. Fresh/recreated Pi launches share the shell
+readiness check described below. See the [credential boundary and SSH setup](configuration.md#agent-credential-boundary).
+
 ### Codex receipt confirmation
 
 Fresh implementation and reviewer contexts share the same launch boundary.

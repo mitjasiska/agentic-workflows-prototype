@@ -468,8 +468,10 @@ recycling a historical name. A successful empty result or only open PRs permits
 the selection. Git ancestry and `git branch --merged` are never used as a proxy.
 
 Public repositories need no GitHub credentials within unauthenticated API limits.
-Private repositories/rate limits require an existing `GH_TOKEN` or `GITHUB_TOKEN`
-with pull-request read access; `gh` is not required. API/network errors or malformed
+Private repositories/rate limits need pull-request read access through the active
+local `gh` login or an explicit `GH_TOKEN`/`GITHUB_TOKEN` override; see
+[credential setup](configuration.md#local-github-cli-authentication). `gh` remains
+optional. API/network errors or malformed
 responses refuse the selection. PR history is checked in the configured base's
 upstream repository; if configured remotes point to different repositories, reuse
 is refused because cross-repository PR history is not supported. Hosts other
@@ -1527,9 +1529,9 @@ Neither a fresh review nor deletion of a remote ref clears publication history.
 
 ### Authentication and signing
 
-The REST API uses `GH_TOKEN` or `GITHUB_TOKEN`; see
+The REST API uses local `gh` authentication or an explicit token override; see
 [GitHub publishing configuration](configuration.md#github-publishing).
-API failures name the selected credential variable (never its value), HTTP
+API failures name the selected credential source (never its value), HTTP
 status when available, and a safe category such as authentication, token
 permissions, SSO, rate limiting, request validation, DNS/TLS, timeout, or invalid
 JSON. Diagnostics use fixed guidance and allowlisted validation field/code names;
@@ -1791,8 +1793,9 @@ missing/ambiguous evidence, another head/base/repository, unavailable API access
 or a merge commit absent from the local base all cause refusal. Linear completion,
 matching titles/messages, and patch similarity alone never prove a merge.
 
-Squash verification supports `github.com` and uses the same optional `GH_TOKEN` or
-`GITHUB_TOKEN` as the existing history checks. It reads PR evidence without changing
+Squash verification supports `github.com` and uses the same
+[local GitHub credentials](configuration.md#local-github-cli-authentication) as the
+existing history checks. It reads PR evidence without changing
 GitHub state. Non-ancestor cleanup on other hosts is refused.
 
 ### Removal checks and Python caches
