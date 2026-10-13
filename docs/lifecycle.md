@@ -163,6 +163,146 @@ Lite still listens only on that machine's loopback address; tunneling and privat
 network access are operator-owned, with no remote hosting, accounts, or network
 configuration added by Lite.
 
+### Optional private Tailscale Serve access
+
+Tailscale and background operation are optional; ordinary `task dashboard` still
+works in the foreground with only localhost HTTP access. To use a private HTTPS
+URL without SSH forwarding, use your own Linux Tailscale installation and one
+explicit AWL option:
+
+```text
+https://<device>.<tailnet>.ts.net/
+    -> Tailscale Serve (private HTTPS)
+    -> http://127.0.0.1:8765/ (AWL)
+```
+
+Access is limited by **tailnet policy/ACLs**, with no AWL authentication layer.
+Permitted tailnet members can read workflow metadata, including task identities,
+workspace paths, and bounded history. Use private Serve, with no Funnel enabled
+for this endpoint. See [Tailscale Serve prerequisites and access control](https://tailscale.com/docs/features/tailscale-serve).
+
+On the workflow machine, check `tailscale serve --help` for the installed version
+and complete Tailscale's one-time HTTPS setup if prompted. Use a version supporting
+`--bg` for persistence. Check existing Serve routes before configuring the root
+HTTPS endpoint so you do not replace another application:
+
+```sh
+tailscale serve status
+tailscale serve --bg 8765
+tailscale serve status
+```
+
+The status should show your private HTTPS URL proxying `/` to
+`http://127.0.0.1:8765`. Use that URL's hostname in place of the placeholders below.
+Serve's supported `--bg` mode persists after the terminal closes and resumes after
+device or Tailscale restarts; it needs no additional supervisor. See the
+[Serve CLI reference](https://tailscale.com/docs/reference/tailscale-cli/serve).
+
+For an initial foreground check, run from your permanent AWL checkout:
+
+```sh
+task dashboard --port 8765 --trusted-origin 'https://<device>.<tailnet>.ts.net'
+```
+
+AWL still listens only on `127.0.0.1`; local HTTP access remains available. The
+option accepts one HTTPS hostname and optional port, with no credentials,
+wildcard, path, query, or fragment. A trailing `/`, hostname case, and default
+HTTPS port `:443` are normalized. Other ports must match exactly. Without this
+option the tailnet hostname receives 403. With it, the preserved Host must match
+that authority, and any Origin must equal its normalized HTTPS origin. Browser
+navigation and same-origin GETs can omit Origin. Cross-site requests and unrelated
+or ambiguous headers are refused; forwarded headers do not authorize requests.
+
+### Optional dashboard user service
+
+To keep the dashboard available after logout and reboot, stop the foreground
+check with Ctrl+C and create `~/.config/systemd/user/awl-dashboard.service`
+(`mkdir -p ~/.config/systemd/user` if needed). This example assumes the permanent
+checkout is `~/projects/agentic-workflows-lite`; adjust both paths and the trusted
+origin. **Never point the service at a temporary Herdr worktree.** If using an
+installed CLI instead, set `ExecStart` to its absolute executable path followed
+by `dashboard` and these options, and keep a stable working directory.
+
+```ini
+[Unit]
+Description=AWL read-only task dashboard
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/agentic-workflows-lite
+Environment="PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/usr/bin/python3.12 %h/projects/agentic-workflows-lite/task dashboard --port 8765 --trusted-origin https://<device>.<tailnet>.ts.net
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+`%h` expands to the service user's home. Check `command -v python3.12 git herdr`
+and adjust the Python path and `Environment` PATH for your installation; a user
+service does not source interactive shell startup files. Use the same account
+and permanent AWL configuration as your normal CLI. Herdr discovery can be
+temporarily unavailable after startup; the dashboard labels this uncertainty
+and retries as usual.
+
+Enable lingering once for that account, then enable and inspect the service:
+
+```sh
+loginctl enable-linger "$USER"
+loginctl show-user "$USER" -p Linger
+systemctl --user daemon-reload
+systemctl --user enable --now awl-dashboard.service
+systemctl --user status awl-dashboard.service
+journalctl --user -u awl-dashboard.service -n 50 --no-pager
+```
+
+Confirm `Linger=yes`: [lingering](https://www.freedesktop.org/software/systemd/man/latest/loginctl.html)
+starts the user manager at boot and keeps it after logout. Local policy may require
+administrator authorization for this one-time step; have the administrator
+enable lingering for your account if it is refused. The dashboard itself runs
+as your regular user. It stays a foreground Python process managed by systemd.
+
+Serve and the dashboard can start in either order. Serve's saved proxy route can
+be active while AWL is unavailable; requests recover when AWL is ready, and an
+open dashboard reconnects and fetches a fresh snapshot. There is no cross-service
+health gate. After editing the unit, run `systemctl --user daemon-reload` and
+`systemctl --user restart awl-dashboard.service`. To stop it now and disable future
+automatic starts:
+
+```sh
+systemctl --user disable --now awl-dashboard.service
+```
+
+To turn off this Serve HTTPS listener, inspect status then run
+`tailscale serve --https=443 off`. To reconfigure it, turn it off and rerun
+`tailscale serve --bg 8765` with the desired fixed local port; update AWL's `--port`
+and restart its service to match. If the external hostname or HTTPS port changes,
+update `--trusted-origin` too. Check `tailscale serve status` afterward.
+`tailscale serve reset` clears **all** Serve configuration on the device, so use
+it only when removing every Serve route is intended. Disabling AWL does not
+disable lingering for other user services.
+
+### Manual Tailscale and reboot acceptance check
+
+Automated dashboard tests exercise HTTP headers, static assets, JSON, SSE, and
+reconnects over loopback; they do not verify a real tailnet, systemd, or reboot.
+After the one-time setup above, check your installation:
+
+1. Confirm `tailscale serve status` shows the intended private URL and loopback
+   target. Confirm `ss -ltn 'sport = :8765'` shows AWL listening on `127.0.0.1`,
+   and local `http://127.0.0.1:8765/` still opens.
+2. On another permitted tailnet device, open `https://<device>.<tailnet>.ts.net/`
+   with no SSH tunnel. In browser network tools, verify HTML, `app.js`,
+   `styles.css`, and `/api/snapshot` return 200 and `/api/events` remains a live
+   event stream. Check normal workflow changes refresh the view. Restart only
+   `awl-dashboard.service` and confirm the open page reconnects and refreshes.
+3. Close the setup shells and log out of the workflow machine; verify the URL
+   still works. Reboot at an operator-chosen time and, **before logging into that
+   machine**, verify the same URL from the other tailnet device. No dashboard or
+   Serve startup command should be needed. If it fails, inspect user-service
+   status/journal, `Linger`, and Serve status after login.
+
 ## Task start
 
 A repository is resolved as `projects_root / repo_name`. Each must be its permanent Git

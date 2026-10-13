@@ -24,6 +24,8 @@ from task_start.workspace import Herdr
 
 
 ROOT = Path(__file__).resolve().parents[1]
+TRUSTED_ORIGIN = 'https://dashboard.example.invalid'
+TRUSTED_HOST = 'dashboard.example.invalid'
 
 
 def report(state='available', *, tasks=None):
@@ -153,12 +155,14 @@ class CollectorTests(unittest.TestCase):
 
 
 class HTTPTests(unittest.TestCase):
+    trusted_origin = None
+
     def setUp(self):
         self.source = report(tasks=[task()])
         self.reader = Mock(side_effect=lambda: StatusReport(self.source))
         self.collector = dashboard.SnapshotCollector(self.reader)
         self.collector.refresh()
-        self.server = dashboard.DashboardServer(self.collector, port=0)
+        self.server = dashboard.DashboardServer(self.collector, port=0, trusted_origin=self.trusted_origin)
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs=dict(poll_interval=.01), daemon=True)
         self.thread.start()
         self.addCleanup(self.stop)
@@ -271,6 +275,47 @@ class HTTPTests(unittest.TestCase):
         response, _ = self.request('/api/snapshot', headers={'Host': 'localhost:9876', 'Origin': 'http://localhost:9876'})
         self.assertEqual(response.status, 200, 'SSH forwarding may use a different local port')
 
+    def test_extra_host_requires_explicit_opt_in_for_all_routes(self):
+        for route in (*dashboard.ASSETS, '/api/snapshot', '/api/events'):
+            with self.subTest(route=route):
+                response, _ = self.request(route, 'HEAD', headers={'Host': TRUSTED_HOST})
+                self.assertEqual(response.status, 403 if self.trusted_origin is None else 200)
+
+    def test_forwarded_headers_do_not_authorize_a_host_or_origin(self):
+        forwarded = {'Forwarded': f'host={TRUSTED_HOST};proto=https',
+                     'X-Forwarded-Host': TRUSTED_HOST, 'X-Forwarded-Proto': 'https',
+                     'Tailscale-User-Login': 'synthetic@example.invalid'}
+        for headers in ({'Host': 'attacker.invalid'},
+                        {'Host': 'localhost', 'Origin': TRUSTED_ORIGIN},
+                        {'Host': 'localhost', 'Origin': 'https://attacker.invalid'}):
+            response, _ = self.request('/api/snapshot', headers=forwarded | headers)
+            self.assertEqual(response.status, 403)
+        response, _ = self.request('/api/snapshot', headers=forwarded | {'Host': 'localhost'})
+        self.assertEqual(response.status, 200, 'Forwarded headers have no effect on local access')
+
+    def test_missing_duplicate_and_ambiguous_security_headers_refused(self):
+        host = TRUSTED_HOST if self.trusted_origin else 'localhost'
+        origin = self.trusted_origin or 'http://localhost'
+        header_sets = [[], [('Host', host), ('Host', host)],
+                       [('Host', host), ('Host', 'attacker.invalid')],
+                       [('Host', 'attacker.invalid'), ('Host', host)],
+                       [('Host', host), ('Origin', origin), ('Origin', origin)],
+                       [('Host', host), ('Origin', origin), ('Origin', 'https://attacker.invalid')],
+                       [('Host', host), ('Sec-Fetch-Site', 'same-origin'), ('Sec-Fetch-Site', 'cross-site')],
+                       [('Host', host), ('Sec-Fetch-Site', 'same-origin, cross-site')],
+                       [('Host', host + ',attacker.invalid')],
+                       [('Host', host), ('Origin', origin + ', https://attacker.invalid')]]
+        for headers in header_sets:
+            with self.subTest(headers=headers):
+                connection = self.connect()
+                connection.putrequest('GET', '/api/snapshot', skip_host=True)
+                for name, value in headers:
+                    connection.putheader(name, value)
+                connection.endheaders()
+                response = connection.getresponse()
+                self.assertEqual(response.status, 403)
+                response.read()
+
     def test_known_assets_and_head_independent_of_working_directory(self):
         previous = Path.cwd()
         with tempfile.TemporaryDirectory() as directory:
@@ -288,6 +333,101 @@ class HTTPTests(unittest.TestCase):
                 self.assertEqual(dashboard.asset_root(), ROOT / 'web')
             finally:
                 os.chdir(previous)
+
+
+class TrustedOriginHTTPTests(HTTPTests):
+    # Run the existing loopback/cache/read-only/SSE checks with opt-in too.
+    trusted_origin = TRUSTED_ORIGIN
+
+    def test_proxy_assets_snapshot_and_head_keep_security_headers(self):
+        for origin in (None, TRUSTED_ORIGIN):
+            headers = {'Host': TRUSTED_HOST, 'Sec-Fetch-Site': 'same-origin'}
+            if origin is not None:
+                headers['Origin'] = origin
+            for route in (*dashboard.ASSETS, '/api/snapshot'):
+                for method in ('GET', 'HEAD'):
+                    with self.subTest(route=route, method=method, origin=origin):
+                        response, body = self.request(route, method, headers)
+                        self.assertEqual(response.status, 200)
+                        self.assertIsNone(response.getheader('Access-Control-Allow-Origin'))
+                        self.assertEqual(response.getheader('Cache-Control'), 'no-store')
+                        self.assertEqual(response.getheader('X-Content-Type-Options'), 'nosniff')
+                        self.assertEqual(response.getheader('Referrer-Policy'), 'no-referrer')
+                        self.assertIn("connect-src 'self'", response.getheader('Content-Security-Policy'))
+                        self.assertIn("frame-ancestors 'none'", response.getheader('Content-Security-Policy'))
+                        if method == 'HEAD':
+                            self.assertEqual(body, b'')
+                        elif route in dashboard.ASSETS:
+                            self.assertEqual(body, (ROOT / 'web' / dashboard.ASSETS[route][0]).read_bytes())
+                        else:
+                            self.assertEqual(json.loads(body)['projection'], self.source)
+        for host in (TRUSTED_HOST + ':443', TRUSTED_HOST.upper()):
+            response, _ = self.request('/', headers={'Host': host, 'Origin': TRUSTED_ORIGIN})
+            self.assertEqual(response.status, 200)
+        self.assertEqual(self.server.server_address[0], '127.0.0.1')
+        self.assertEqual(self.reader.call_count, 1)
+
+    def test_proxy_rejects_wrong_host_scheme_port_origin_and_cross_site(self):
+        headers_to_reject = [
+            {'Host': host} for host in ('other.example.invalid', 'other.example.ts.net',
+                'sub.' + TRUSTED_HOST, TRUSTED_HOST + '.attacker.invalid', TRUSTED_HOST + '.',
+                TRUSTED_HOST + ':444', TRUSTED_HOST + ':8765', TRUSTED_HOST + ':',
+                TRUSTED_HOST + '@attacker.invalid', TRUSTED_HOST + '/path')]
+        headers_to_reject += [{'Host': TRUSTED_HOST, 'Origin': origin} for origin in (
+            'https://attacker.invalid', 'http://' + TRUSTED_HOST, 'http://localhost',
+            TRUSTED_ORIGIN + ':444', TRUSTED_ORIGIN + '/', 'null', '',
+            TRUSTED_ORIGIN + ' https://attacker.invalid')]
+        headers_to_reject += [{'Host': TRUSTED_HOST, 'Origin': TRUSTED_ORIGIN, 'Sec-Fetch-Site': 'cross-site'},
+                              {'Host': 'localhost', 'Origin': TRUSTED_ORIGIN}]
+        for headers in headers_to_reject:
+            for route in ('/', '/app.js', '/api/snapshot', '/api/events'):
+                with self.subTest(headers=headers, route=route):
+                    response, body = self.request(route, headers=headers)
+                    self.assertEqual(response.status, 403)
+                    self.assertNotIn(b'projection', body)
+                    self.assertIsNone(response.getheader('Access-Control-Allow-Origin'))
+
+    def test_proxy_sse_changes_heartbeat_reconnect_and_snapshot(self):
+        headers = {'Host': TRUSTED_HOST, 'Origin': TRUSTED_ORIGIN, 'Sec-Fetch-Site': 'same-origin'}
+        connection = self.connect()
+        connection.request('GET', '/api/events', headers=headers)
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        self.assertIn('text/event-stream', response.getheader('Content-Type'))
+        self.assertEqual(self.event(response), b'retry: 2000\nevent: invalidate\ndata: 1\n')
+        original_wait = self.collector.wait
+        with patch.object(self.collector, 'wait', side_effect=lambda revision: original_wait(revision, timeout=.02)):
+            self.source = report(tasks=[task(state='paused')])
+            self.collector.refresh()
+            self.assertEqual(self.event(response), b'event: invalidate\ndata: 2\n')
+            self.assertEqual(self.event(response), b': heartbeat\n')
+        response.close()
+        connection.close()
+        self.source = report()
+        self.collector.refresh()
+        reconnected = self.connect()
+        reconnected.request('GET', '/api/events', headers=headers | {'Last-Event-ID': '1'})
+        self.assertEqual(self.event(reconnected.getresponse()), b'retry: 2000\nevent: invalidate\ndata: 3\n')
+        response, body = self.request('/api/snapshot', headers=headers)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(json.loads(body)['projection'], self.source)
+        self.assertEqual(self.reader.call_count, 3)
+
+    def test_explicit_https_port_does_not_trust_other_ports(self):
+        server = dashboard.DashboardServer(self.collector, port=0, trusted_origin=TRUSTED_ORIGIN + ':8443')
+        self.addCleanup(server.server_close)
+        with patch.object(self.server, 'trusted_origin', server.trusted_origin):
+            for host, origin, expected in (
+                    (TRUSTED_HOST + ':8443', TRUSTED_ORIGIN + ':8443', 200),
+                    (TRUSTED_HOST + ':8443', None, 200),
+                    (TRUSTED_HOST, TRUSTED_ORIGIN, 403),
+                    (TRUSTED_HOST + ':443', TRUSTED_ORIGIN, 403),
+                    (TRUSTED_HOST + ':8443', TRUSTED_ORIGIN, 403)):
+                headers = {'Host': host}
+                if origin is not None:
+                    headers['Origin'] = origin
+                response, _ = self.request('/api/snapshot', headers=headers)
+                self.assertEqual(response.status, expected)
 
 
 class CanonicalAdaptationTests(unittest.TestCase):
@@ -422,10 +562,44 @@ class EntryPointTests(unittest.TestCase):
         for args, expected in [(['dashboard'], 8765), (['dashboard', '--port', '0'], 0)]:
             with patch.object(cli, 'serve_dashboard') as serve, patch.object(cli, 'load_local', side_effect=AssertionError('No workflow config')):
                 self.assertEqual(cli.main(args), 0)
-                serve.assert_called_once_with(port=expected)
+                serve.assert_called_once_with(port=expected, trusted_origin=None)
         for args in (['dashboard', '--host', '0.0.0.0'], ['dashboard', '--port', '-1'], ['dashboard', '--port', '65536'], ['dashboard', '--port', 'x']):
             with self.subTest(args=args), patch('sys.stderr', new=io.StringIO()), self.assertRaises(SystemExit):
                 cli.parser().parse_args(args)
+
+    def test_trusted_origin_cli_validation_normalization_and_dispatch(self):
+        for supplied, expected in ((TRUSTED_ORIGIN, TRUSTED_ORIGIN),
+                                   (TRUSTED_ORIGIN + '/', TRUSTED_ORIGIN),
+                                   ('https://DASHBOARD.EXAMPLE.INVALID:443/', TRUSTED_ORIGIN),
+                                   (TRUSTED_ORIGIN + ':8443', TRUSTED_ORIGIN + ':8443')):
+            with self.subTest(supplied=supplied), patch.object(cli, 'serve_dashboard') as serve, \
+                    patch.object(cli, 'load_local', side_effect=AssertionError('No workflow config')):
+                self.assertEqual(cli.main(['dashboard', '--trusted-origin', supplied]), 0)
+                serve.assert_called_once_with(port=8765, trusted_origin=expected)
+        invalid = ['', 'http://' + TRUSTED_HOST, TRUSTED_HOST, 'https://',
+                   'https://*.example.invalid', 'https://user@' + TRUSTED_HOST,
+                   TRUSTED_ORIGIN + '/path', TRUSTED_ORIGIN + '?', TRUSTED_ORIGIN + '#',
+                   TRUSTED_ORIGIN + ':0', TRUSTED_ORIGIN + ':65536', TRUSTED_ORIGIN + ':bad',
+                   TRUSTED_ORIGIN + ':', TRUSTED_ORIGIN + ',https://other.example.invalid',
+                   TRUSTED_ORIGIN + ' https://other.example.invalid',
+                   ' ' + TRUSTED_ORIGIN, TRUSTED_ORIGIN + '\n', TRUSTED_ORIGIN + '\t',
+                   'https://dash\tboard.example.invalid', 'https://dashboard.example.invalid\\path',
+                   'https://dashboard..invalid', 'https://-dashboard.invalid', 'https://dashboard-.invalid',
+                   'https://dash_board.invalid', 'https://%64ashboard.invalid', 'https://dáshboard.invalid',
+                   'https://[::1]', TRUSTED_ORIGIN + '.', 'https://' + 'a' * 64 + '.invalid',
+                   'https://' + '.'.join(['a' * 63] * 4)]
+        for value in invalid:
+            with self.subTest(value=value), patch('sys.stderr', new=io.StringIO()) as error, \
+                    patch.object(cli, 'serve_dashboard') as serve:
+                with self.assertRaises(SystemExit) as failure:
+                    cli.main(['dashboard', '--trusted-origin', value])
+                self.assertEqual(failure.exception.code, 2)
+                self.assertIn('Trusted origin must be one HTTPS hostname', error.getvalue())
+                serve.assert_not_called()
+            with self.subTest(server_value=value), patch.object(dashboard.ThreadingHTTPServer, '__init__') as bind:
+                with self.assertRaises(TaskError):
+                    dashboard.DashboardServer(dashboard.SnapshotCollector(), port=0, trusted_origin=value)
+                bind.assert_not_called()
 
     def test_distribution_layout_serves_sibling_web_and_fails_clearly_when_missing(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -447,6 +621,11 @@ class EntryPointTests(unittest.TestCase):
                 module.load_assets()
 
     def test_actual_entrypoint_from_other_directory_and_clean_sigterm(self):
+        for trusted_origin in (None, TRUSTED_ORIGIN):
+            with self.subTest(trusted_origin=trusted_origin):
+                self.check_actual_entrypoint(trusted_origin)
+
+    def check_actual_entrypoint(self, trusted_origin):
         with tempfile.TemporaryDirectory() as directory:
             # Inject only synthetic status data, never inspect user configuration.
             fixture = Path(directory) / 'sitecustomize.py'
@@ -454,7 +633,10 @@ class EntryPointTests(unittest.TestCase):
                 'from task_start.status import StatusReport\n'
                 'd.task_status = lambda: StatusReport(' + repr(report()) + ')\n')
             env = dict(os.environ, PYTHONPATH=os.pathsep.join((directory, str(ROOT))))
-            process = subprocess.Popen([sys.executable, str(ROOT / 'task'), 'dashboard', '--port', '0'],
+            args = [sys.executable, str(ROOT / 'task'), 'dashboard', '--port', '0']
+            if trusted_origin is not None:
+                args += ['--trusted-origin', trusted_origin]
+            process = subprocess.Popen(args,
                 cwd=directory, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             try:
                 import select
@@ -469,6 +651,12 @@ class EntryPointTests(unittest.TestCase):
                     response = connection.getresponse()
                     self.assertEqual(response.status, 200)
                     self.assertIn(b'Local task dashboard', response.read())
+                    connection.request('GET', '/api/snapshot', headers={'Host': TRUSTED_HOST, 'Origin': TRUSTED_ORIGIN})
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, 403 if trusted_origin is None else 200)
+                    body = response.read()
+                    if trusted_origin is not None:
+                        self.assertEqual(json.loads(body)['projection'], report())
                 finally:
                     connection.close()
                 process.send_signal(signal.SIGTERM)
