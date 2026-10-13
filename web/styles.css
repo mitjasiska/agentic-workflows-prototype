@@ -55,6 +55,10 @@ h4 { font-size: 1rem; }
 .notice { white-space: pre-line; padding: 1rem 2rem; border-bottom: 1px solid #e4caa0; color: #754200; background: #fff4df; font-size: 1rem; }
 .warning { border-left: 4px solid #b17419; padding-left: 1rem; color: #754200; }
 .detail-section { margin-top: 1.7rem; }
+.report-actions { display: flex; gap: .6rem; flex-wrap: wrap; margin-bottom: .6rem; }
+.report-actions button { font: inherit; font-size: .88rem; padding: .4rem .7rem; border: 1px solid #8ba2bd; border-radius: 6px; background: #eff5ff; color: #1d5898; cursor: pointer; }
+.report-actions button:disabled { opacity: .55; cursor: default; }
+.task-report textarea { width: 100%; resize: vertical; font: .85rem/1.5 monospace; color: inherit; background: #f5f8fc; border: 1px solid #dce2e9; border-radius: 6px; padding: .7rem; }
 .status-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .8rem; margin: 1.4rem 0; }
 .status-card { border: 1px solid #dce2e9; border-radius: 8px; padding: .9rem 1rem; min-width: 0; overflow-wrap: anywhere; }
 .status-card h3 { color: #566779; font-size: .85rem; font-weight: 500; }
