@@ -15,6 +15,7 @@ import time
 from uuid import UUID
 
 from . import TaskError
+from .credentials import agent_environment
 
 
 def validate_readiness_only(proof, checkout):
@@ -58,7 +59,7 @@ class CodexRPC:
             self.process = subprocess.Popen(
                 ["codex", "app-server", "--listen", "stdio://"], cwd=self.cwd,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                text=True, encoding="utf-8", bufsize=1)
+                text=True, encoding="utf-8", bufsize=1, env=agent_environment())
             self.reader = Thread(target=self.read_messages, daemon=True)
             self.reader.start()
             self.request("initialize", {"clientInfo": {"name": "agentic_workflows", "version": "1"},

@@ -51,6 +51,8 @@ class PiInitialTransport:
         test.enterContext(patch('task_start.agent.adapter_for', side_effect=lambda options:
                                Pi(options) if options.kind == 'pi' else test.adapter))
         test.enterContext(patch.object(Pi, 'check_available'))
+        test.enterContext(patch.object(Pi, 'clear_shell_input'))
+        test.enterContext(patch.object(Pi, 'filter_shell_credentials'))
         test.enterContext(patch.object(Pi, 'model_mode_capabilities', return_value=('implementer', 'low', ('low',))))
         self.command = test.enterContext(patch.object(Pi, 'command', side_effect=self.herdr))
         test.enterContext(patch('task_start.implementation_pass.time',

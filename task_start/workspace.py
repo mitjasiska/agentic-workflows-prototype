@@ -94,7 +94,9 @@ def run(args: list[str], *, input: bytes | None = None, env: dict[str, str] | No
             except (ValueError, KeyError, TypeError):
                 pass
         elif operation in {"fetch", "ls-remote"}:
-            hint = "check remote access and whether the upstream base branch exists"
+            hint = ("check remote access and whether the upstream base branch exists; for SSH, "
+                    "check SSH_AUTH_SOCK and ssh-add -l, load the Git key with ssh-add, "
+                    "and verify host trust/access manually (docs/configuration.md#ssh-agent-on-linux)")
         elif operation == "merge":
             hint = "base could not be updated safely; inspect the checkout before retrying"
         raise error_type(f"{args[0]} {operation} failed (exit {result.returncode}); {hint}")

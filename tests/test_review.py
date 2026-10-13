@@ -40,6 +40,8 @@ class ReviewTests(unittest.TestCase):
 
     def setUp(self):
         baseline.LocalGitIntegrationTests.setUp(self)
+        self.enterContext(patch.object(Pi, "clear_shell_input"))
+        self.enterContext(patch.object(Pi, "filter_shell_credentials"))
         self.path = self.repo.parent / "task café"
         self.branch = "dev-7-original-title"
         self.command(self.repo, "worktree", "add", "-b", self.branch, str(self.path))
@@ -1435,6 +1437,8 @@ class ResultTests(unittest.TestCase):
 
 class ReviewAdapterTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(patch.object(Pi, "clear_shell_input"))
+        self.enterContext(patch("task_start.agent.HerdrAgentAdapter.filter_shell_credentials"))
         self.directory = self.enterContext(tempfile.TemporaryDirectory())
         self.workspace = Workspace("dev-7-task", Path(self.directory), "w1", "t1", "p1", "existing")
         self.reference = dict(agent="codex", kind="id", value="01a0d314-bd68-7203-8b68-f2520f892afa")

@@ -2,6 +2,7 @@ import copy
 from dataclasses import replace
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -185,6 +186,7 @@ class AgentTests(unittest.TestCase):
         self.workspace = Workspace("dev-7-old", Path("/exact/checkout"), "w6", "w6:t8", "w6:p20", "ready")
         self.issue = ISSUE
         self.codex = Codex(AgentOptions("codex", "custom/model", "high"))
+        self.filter_credentials = self.enterContext(patch.object(self.codex, "filter_shell_credentials"))
         clear_input_patcher = patch.object(self.codex, "clear_shell_input")
         self.clear_shell_input = clear_input_patcher.start()
         self.addCleanup(clear_input_patcher.stop)
@@ -254,6 +256,7 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(result.turn_id, self.turn_id)
         self.assertEqual(result.session_id, self.thread_id)
         self.clear_shell_input.assert_called_once_with(self.workspace)
+        self.filter_credentials.assert_called_once_with(self.workspace)
         calls = [c.args[0] for c in run.call_args_list]
         self.assertEqual(calls[1][4:], ["--kind", "codex", "--pane", "w6:p20", "--timeout", "30000", "--", *self.args[1:]])
         self.assertEqual(calls[2:], [["herdr", "agent", "get", "w6:p20"]] * 2)
@@ -556,6 +559,8 @@ class PiAdapterTests(unittest.TestCase):
                                    "w6", "w6:t8", "w6:p20", "ready")
         self.options = AgentOptions("pi", "anthropic/claude-sonnet", "high")
         self.pi = Pi(self.options)
+        self.filter_credentials = self.enterContext(patch.object(self.pi, "filter_shell_credentials"))
+        self.clear_shell_input = self.enterContext(patch.object(self.pi, "clear_shell_input"))
         self.handoff = implementation_handoff(ISSUE, self.workspace)
         self.execution = AgentExecution(ISSUE, Path("/resolved/repository"),
                                         self.workspace, self.options, self.handoff)
@@ -583,6 +588,8 @@ class PiAdapterTests(unittest.TestCase):
         self.assertEqual(result, LaunchResult("pi", "w6:p20",
                          "Pi prompt submitted in w6:p20 (session pi-session)", "pi-session"))
         self.capabilities.assert_called_once_with(self.workspace)
+        self.clear_shell_input.assert_called_once_with(self.workspace)
+        self.filter_credentials.assert_called_once_with(self.workspace)
         start = command.call_args_list[1].args
         self.assertEqual(start[3:], ("--kind", "pi", "--pane", "w6:p20",
                                     "--timeout", "30000", "--", *self.args))
@@ -762,7 +769,9 @@ class PiAdapterTests(unittest.TestCase):
         ]
         completed = MagicMock(returncode=0,
                               stdout=("\n".join(json.dumps(r) for r in responses) + "\n").encode())
-        with patch("task_start.agent.shutil.which", return_value="/agents/pi"), \
+        with patch.dict(os.environ, {"GH_TOKEN": "synthetic-controller-key", "GITHUB_TOKEN": "synthetic-fallback",
+                                     "SSH_AUTH_SOCK": "/tmp/test-agent.sock", "ANTHROPIC_API_KEY": "synthetic-provider"}), \
+                patch("task_start.agent.shutil.which", return_value="/agents/pi"), \
                 patch("task_start.agent.subprocess.run", return_value=completed) as run:
             capabilities = pi.model_mode_capabilities(self.workspace)
         self.assertEqual(capabilities, ("openai-codex/gpt-6-luna", "max",
@@ -771,6 +780,10 @@ class PiAdapterTests(unittest.TestCase):
         self.assertEqual(args[:5], ["/agents/pi", "--model", "openai-codex/gpt-6-luna",
                                     "--thinking", "max"])
         self.assertEqual(args[5:], ["--mode", "rpc", "--no-session", "--no-tools"])
+        self.assertNotIn("GH_TOKEN", run.call_args.kwargs["env"])
+        self.assertNotIn("GITHUB_TOKEN", run.call_args.kwargs["env"])
+        self.assertEqual(run.call_args.kwargs["env"]["SSH_AUTH_SOCK"], "/tmp/test-agent.sock")
+        self.assertEqual(run.call_args.kwargs["env"]["ANTHROPIC_API_KEY"], "synthetic-provider")
         self.assertEqual(run.call_args.kwargs["cwd"], self.workspace.path)
         requests = [json.loads(line) for line in run.call_args.kwargs["input"].decode().splitlines()]
         self.assertEqual(requests, [dict(id="state", type="get_state"),
@@ -895,6 +908,8 @@ class ControlledTaskStartAcceptanceTests(unittest.TestCase):
     """Drive the same mocked workflow boundary through both real adapters."""
 
     def setUp(self):
+        self.enterContext(patch("task_start.agent.HerdrAgentAdapter.filter_shell_credentials"))
+        self.enterContext(patch.object(Pi, "clear_shell_input"))
         directory = self.enterContext(tempfile.TemporaryDirectory())
         self.enterContext(patch("task_start.contexts.registry_path", return_value=Path(directory) / "contexts.sqlite3"))
         self.enterContext(patch("task_start.cli.launch_registered",

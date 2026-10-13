@@ -1,4 +1,4 @@
-"""Conservative PR history checks, including squash merges, without a gh dependency."""
+"""Conservative PR history checks, with optional local GitHub CLI authentication."""
 
 import json
 from dataclasses import dataclass
@@ -7,6 +7,7 @@ import os
 import re
 import socket
 import ssl
+import subprocess
 from time import monotonic, sleep
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
@@ -38,18 +39,48 @@ def repository_name(remote: str) -> str | None:
     return path if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", path) else None
 
 
+def validate_credential(source, token):
+    if not token or any(not 33 <= ord(char) <= 126 for char in token):
+        raise TaskError(f"GitHub API credential {source} contains whitespace, control, or non-ASCII characters "
+                        "or is empty; correct that credential without printing its value")
+    return source, token
+
+
+def cli_credential():
+    """Read the active github.com credential privately; never prompt or persist it."""
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "token", "--hostname", "github.com"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            env={**os.environ, "GH_PROMPT_DISABLED": "1"}, timeout=10, check=False)
+    except FileNotFoundError:
+        return None
+    except (OSError, subprocess.TimeoutExpired):
+        raise TaskError("GitHub CLI credential lookup could not complete; check gh auth status --hostname github.com "
+                        "and unlock the local credential store before retrying") from None
+    if result.returncode:
+        return None
+    try:
+        token = result.stdout.decode("ascii")
+        token = token[:-2] if token.endswith("\r\n") else token.removesuffix("\n")
+    except UnicodeError:
+        raise TaskError("GitHub CLI returned an invalid API credential; repair gh authentication without printing its token") from None
+    return validate_credential("gh auth token", token)
+
+
 def api_credential(*, required=False):
-    """Use the caller's selected API credential, independently of Git/gh auth."""
+    """Explicit overrides retain precedence; otherwise use gh's local store."""
     for source in ("GH_TOKEN", "GITHUB_TOKEN"):
         token = os.environ.get(source)
         if token:
-            if any(not 33 <= ord(char) <= 126 for char in token):
-                raise TaskError(f"GitHub API credential {source} contains whitespace, control, or non-ASCII characters; "
-                                "correct that environment variable without printing its value")
-            return source, token
+            return validate_credential(source, token)
+    credential = cli_credential()
+    if credential is not None:
+        return credential
     if required:
-        raise TaskError("GitHub API authentication is missing: task pr requires GH_TOKEN or GITHUB_TOKEN "
-                        "with repository Pull requests: write access; Git SSH credentials and gh login are separate")
+        raise TaskError("GitHub API authentication is missing: use gh auth login --hostname github.com "
+                        "or a command-scoped GH_TOKEN/GITHUB_TOKEN with repository Pull requests: write access; "
+                        "Git SSH credentials are separate")
     return "unauthenticated", None
 
 
@@ -158,7 +189,8 @@ def request(path: str, branch: str, *, method: str = "GET", data: dict | None = 
         raise TaskError(f"GitHub PR write was not confirmed ({source}): {cause}. "
                         "A write may already have reached GitHub; rerun task pr to discover and reuse "
                         "any matching PR before another write") from None
-    authentication = ("Set GH_TOKEN or GITHUB_TOKEN for authenticated API access. " if token is None else "")
+    authentication = ("Use gh auth login --hostname github.com or a command-scoped GH_TOKEN/GITHUB_TOKEN "
+                      "with repository Pull requests: read access. " if token is None else "")
     raise TaskError(f"Cannot establish GitHub PR history for {branch} ({source}): {cause}. "
                     f"{authentication}Inspect its PR/merge state before retrying. Workspace left intact.") from None
 

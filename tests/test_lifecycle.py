@@ -208,6 +208,7 @@ class LifecycleTests(unittest.TestCase):
 class GitHubHistoryTests(unittest.TestCase):
     def setUp(self):
         self.enterContext(patch.dict(os.environ, {"GH_TOKEN": "", "GITHUB_TOKEN": ""}))
+        self.enterContext(patch("task_start.github.cli_credential", return_value=None))
         self.remote = "git@github.com:owner/repo.git"
         self.branch = "dev-7-example"
 

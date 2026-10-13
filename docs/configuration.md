@@ -4,7 +4,7 @@
 
 Installation, project mapping, issue structure, task readiness, implementation
 scope, agent selection, review validation, repository permission profiles, and
-GitHub API credentials for the Agentic Workflows Lite (AWL) `task` CLI.
+GitHub API credentials and SSH-agent setup for the Agentic Workflows Lite (AWL) `task` CLI.
 The first public release is a **Developer Preview** for local, single-machine use.
 
 ## Installation and project mapping
@@ -61,9 +61,9 @@ Only synthetic
 exactly to the Linear project name and set `repo_name` and `base_branch`. Missing,
 duplicate, unmatched, or still-marked example mappings fail before task preparation.
 This remains the only authority for Linear-project → repository/base resolution. Machine-specific paths
-and the Linear API key live in `~/.agentic-workflows-lite/config.toml`; shell-exported
-GitHub credentials use the [private secrets file](#persistent-github-token-on-posix)
-described below:
+and the Linear API key live in `~/.agentic-workflows-lite/config.toml`;
+GitHub API access uses [local GitHub CLI authentication](#local-github-cli-authentication)
+or an explicit command-scoped token as described below:
 
 ```toml
 projects_root = "~/projects" # Or "C:/development/projects" on Windows
@@ -88,8 +88,9 @@ the historical namespace.
 path. The historical `~/.agentic-workflows/config.toml` is not read, copied, or
 migrated. Stop controllers and finish active tasks before switching,
 create the new private directory, and manually copy/reconfigure your global TOML
-there (or start from the example). Likewise copy/recreate `secrets.env` privately
-and update shell startup references. Do not put either file in Git.
+there (or start from the example). If retaining a token override, copy/recreate
+`secrets.env` privately and switch automatic shell startup sourcing to
+[command-scoped loading](#persistent-github-token-on-posix). Do not put either file in Git.
 
 Machine-local context storage and retained integration directories also use
 `~/.agentic-workflows-lite/`. Old execution evidence is not automatically adopted;
@@ -445,32 +446,46 @@ security framework remain out of scope.
 
 ## GitHub publishing
 
-`task pr` requires `GH_TOKEN` or `GITHUB_TOKEN` in the invoking environment, with
-access to the repository and permission to read/create/update pull requests.
-For a fine-grained personal access token, select the resource owner and only the
-repositories you use, then grant repository **Pull requests: Read and write**
-(`Pull requests: write` in API diagnostics). PR-history checks during workspace
-reuse and cleanup need **Pull requests: read**, included in that write access.
-These permissions match GitHub's [pull request endpoints](https://docs.github.com/en/rest/pulls/pulls).
-Leave other optional permissions unselected; keep GitHub's automatic Metadata
-read access. The current workflow does not need repository **Contents: write**
-on this API token: it pushes through Git and does not merge PRs through the API.
+The workflow's GitHub REST client needs repository access and **Pull requests:
+read** for private PR-history checks. `task pr` also needs **Pull requests: write**
+to create/update PRs. Git transport separately uses your SSH key or HTTPS
+credential helper; a working SSH key does not authenticate API requests.
 
-Git transport separately needs push access through the user's configured SSH key
-or HTTPS credential helper. The workflow does not require `gh` or copy API tokens
-into Git command arguments.
+### Local GitHub CLI authentication
+
+Prefer an existing authenticated GitHub CLI (`gh`) and its local credential store.
+With no token override, the controller privately reads the active `github.com`
+account using `gh auth token --hostname github.com`. It never prints the token,
+exports it into its environment, or saves it in workflow state. `gh` is optional:
+public reads can run anonymously within API limits, and explicit tokens remain
+supported for manual private-repository workflows.
+
+For one-time interactive setup on the development host:
+
+```sh
+unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
+gh auth login --hostname github.com --web --git-protocol ssh --skip-ssh-key
+gh auth status --hostname github.com
+```
+
+An existing working login needs no replacement. The login command leaves existing
+SSH keys to your own setup. GitHub CLI normally uses the system credential store,
+but can fall back to a plaintext file when that store is unavailable; check its
+reported storage location and configure/unlock the host's credential store for
+secure storage. Do not use `--insecure-storage` for this setup. See
+[GitHub CLI login](https://cli.github.com/manual/gh_auth_login).
+
+Remove token exports and automatic sourcing of `secrets.env` from shell startup
+files such as `~/.bashrc`. Unset old values in existing terminals, and restart old
+agent/Herdr processes from the updated environment when practical: editing startup
+files does not change running processes. Keep secrets, private keys and populated
+configuration outside repositories, synced dotfiles, logs, and agent handoffs.
 
 ### Persistent GitHub token on POSIX
 
-For Aquila-style Bash environments, keep shell-exported workflow secrets in
-`~/.agentic-workflows-lite/secrets.env`, outside every repository. The existing
-`~/.agentic-workflows-lite/config.toml` remains the home for the Linear key and workflow
-settings. Existing installations must copy or recreate these files manually
-as described [above](#manual-namespace-change). The CLI reads environment
-variables and does not load `secrets.env` itself.
-
-Create the private directory and file without truncating an existing file. The
-subshell keeps the restrictive creation mask local to these commands:
+If `gh` is unavailable or you need a specific fine-grained token, retain a private
+`~/.agentic-workflows-lite/secrets.env` with mode `600`, inside a directory with
+mode `700`. Create it without truncating an existing file:
 
 ```sh
 (
@@ -482,114 +497,81 @@ subshell keeps the restrictive creation mask local to these commands:
 )
 ```
 
-In a trusted local editor, add or replace the `GH_TOKEN` export in that file,
-using [`config/secrets.example.env`](../config/secrets.example.env) as the template.
-This is placeholder-only file content; replace the placeholder privately in the
-editor, never by entering a real token in a shell command or chat:
+Use a trusted local editor and the placeholder-only
+[`config/secrets.example.env`](../config/secrets.example.env) template. Never enter
+a real token in a shell command, chat, or tracked file. Source this file only
+inside the subshell for the intended controller command, with tracing disabled:
 
 ```sh
-export GH_TOKEN='REPLACE_WITH_YOUR_FINE_GRAINED_TOKEN'
-```
-
-Remove old hard-coded `GH_TOKEN`/`GITHUB_TOKEN` assignments from `~/.bashrc` and
-any other startup files that could overwrite this value. Keep a single
-`GH_TOKEN` export in the secrets file. Add this stanza to `~/.bashrc`; it uses
-POSIX shell syntax and tolerates a missing file:
-
-```sh
-set +vx  # Disable verbose input and command tracing before loading secrets.
-if [ -r "$HOME/.agentic-workflows-lite/secrets.env" ]; then
+(
+    set +vx
+    unset GH_TOKEN GITHUB_TOKEN
     . "$HOME/.agentic-workflows-lite/secrets.env"
-fi
+    task start DEV-7
+)
 ```
 
-Only source a file you own and trust: sourcing executes shell code. Mode `600`
-allows only your account to read/write the file; retain it after editor saves or
-replacement. Keep the populated file and editor backups out of version control,
-synced dotfiles, logs, examples, and tests. Do not print it or dump the environment
-for diagnosis, and keep shell tracing off while loading or using credentials.
+Use the same subshell pattern for `task start DEV-7 --no-agent`, `task review`,
+`task loop`, cleanup, or `task pr` when they need private API access. The parent
+shell retains its previous environment. Only source files you own and trust:
+sourcing executes shell code. Keep mode `600` after editor saves, and keep backups
+private. Do not source the file from shell startup files or dump the environment
+for diagnosis. The workflow does not load `secrets.env` itself.
 
-Editing or replacing the file does **not** change an already-running shell's
-environment. Reload it in each terminal that will invoke workflow commands:
-
-```sh
-set +vx
-. "$HOME/.agentic-workflows-lite/secrets.env"
-```
-
-Alternatively, source `~/.bashrc` again or open a fresh interactive Bash shell
-that reads it. Login Bash shells must have their login startup file source
-`~/.bashrc`; other POSIX shells need the stanza in their own startup file.
-Child processes inherit the launching shell's environment. Existing agent,
-terminal, or Herdr processes retain their earlier copy, so restart them from an
-updated shell if they launch commands without reloading the file. Removing an
-export or deleting the file also does not unset an inherited value; explicitly
-unset the affected variable in existing shells when retiring a credential.
+For a fine-grained token, select only the required repositories and grant **Pull
+requests: Read-only**, or **Read and write** if using `task pr`. Keep automatic
+Metadata read access. The API token does not need **Contents: write**: publishing
+uses separate Git transport and does not merge PRs through the API. See
+[GitHub pull request endpoints](https://docs.github.com/en/rest/pulls/pulls).
 
 ### Credential selection and safe verification
 
-The REST client reads `GH_TOKEN` first, falling back to `GITHUB_TOKEN` only when
-`GH_TOKEN` is unset or empty. A nonempty revoked or expired `GH_TOKEN` still wins
-over a valid `GITHUB_TOKEN`; authentication failure does not trigger fallback.
-It uses Python's HTTPS transport to `api.github.com`,
-including the invoking environment's proxy and system certificate settings.
-It does not obtain API credentials from `gh auth login`, SSH, Git credential
-helpers, or the machine-local workflow configuration. Successful Git push or
-public PR lookup does not establish that the selected API token can create a PR.
-Whitespace/control characters in a selected token are refused without displaying
-the value or silently selecting a different credential.
+Explicit `GH_TOKEN` takes precedence, then `GITHUB_TOKEN`, then the active `gh`
+credential for `github.com`. Empty variables are skipped. An invalid, revoked,
+or expired selected token is never silently replaced by another identity after
+an API failure. Whitespace/control/non-ASCII token data is rejected without
+printing it. GitHub CLI lookup is noninteractive and bounded to ten seconds;
+unavailable `gh`/login permits anonymous reads, but missing required write auth
+refuses before any write. A lookup timeout or transport failure stops with local
+credential-store guidance. HTTP failures, including private-repository 404s,
+never count as empty PR history.
 
-After loading the file, run this read-only check from the same shell as `task`.
-It follows the same variable precedence, keeps the token out of command arguments,
-and prints only the variable name and HTTP status, or a fixed error message:
+The REST client uses Python HTTPS transport to `api.github.com`, honoring the
+invoking environment's proxy and certificate settings. For the recommended `gh`
+setup, this read-only check verifies private PR-list access without displaying
+PR data or credentials. Replace the synthetic repository name:
 
 ```sh
-python3.12 - <<'PY'
-import os
-from http.client import HTTPException
-from urllib.error import HTTPError
-from urllib.request import Request, urlopen
-
-source = "GH_TOKEN" if os.environ.get("GH_TOKEN") else "GITHUB_TOKEN"
-token = os.environ.get(source)
-if not token:
-    raise SystemExit("No GitHub API token is set.")
-if any(not 33 <= ord(char) <= 126 for char in token):
-    raise SystemExit("Selected token contains invalid characters; edit it privately.")
-try:
-    request = Request("https://api.github.com/user", headers={
-        "Accept": "application/vnd.github+json",
-        "Authorization": f"Bearer {token}",
-        "User-Agent": "agentic-workflows-lite-auth-check",
-        "X-GitHub-Api-Version": "2022-11-28",
-    })
-    with urlopen(request, timeout=30) as response:
-        status = response.status
-except HTTPError as error:
-    status = error.code
-    error.close()
-except (OSError, HTTPException, ValueError):
-    raise SystemExit("GitHub API connection failed; check network/proxy/TLS settings.") from None
-print(f"{source}: HTTP {status}")
-raise SystemExit(0 if status == 200 else 1)
-PY
+gh api --hostname github.com 'repos/OWNER/REPO/pulls?state=all&per_page=1' --silent
 ```
 
-Expect `GH_TOKEN: HTTP 200` with the recommended setup. GitHub's
-[authenticated-user endpoint](https://docs.github.com/en/rest/users/users#get-the-authenticated-user)
-requires authentication but no additional fine-grained permissions. This confirms
-the selected token is accepted, not repository access or PR write permission.
-HTTP 401 means authentication was rejected: check validity/expiration/revocation
-and reload the replacement token in the invoking shell. Do not debug by printing
-the token, request headers, response body, or raw exception details.
+A successful check establishes read access, not PR-write permission. Check the
+selected account/token's repository access, expiration and organization/SSO
+approval on 401/403/404 failures. Diagnose with fixed workflow messages rather
+than printing tokens, headers, or raw exception bodies. See
+[GitHub API troubleshooting](https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api).
 
-An HTTP 403 diagnostic identifying insufficient token permissions means the
-selected token needs repository access and **Pull requests: write**. For a
-fine-grained token, check its selected repositories and permission settings;
-for a classic token, check the appropriate `repo`/`public_repo` scope. Check
-organization approval, SSO, or Actions restrictions when the diagnostic calls
-for them. Tokens and raw API error bodies are never printed by the workflow.
-See [GitHub's API troubleshooting guide](https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api).
+### Agent credential boundary
+
+Implementation, review and integration agents do not need the controller's GitHub
+API credential for ordinary file work. Fresh and recreated Codex/Pi launches,
+Codex session API helpers, and Pi capability probes omit `GH_TOKEN`,
+`GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, and `GITHUB_ENTERPRISE_TOKEN`. Herdr starts
+agents inside an existing pane shell, so the adapter clears stale input at a
+confirmed shell prompt and prefixes the launch with `env -u` for those variables.
+This also covers values loaded by the pane's startup files. Controller API access,
+model-provider authentication, `SSH_AUTH_SOCK`, and Codex permission profiles
+remain unchanged. Already-running agent processes retain their original
+environment; restart them to apply this boundary.
+
+This prevents automatic token inheritance, not access by every process running
+as your account. Local `gh` credentials, files, SSH agents and credential helpers
+remain governed by host permissions and the existing agent sandbox. Do not ask
+agents to read controller secrets during ordinary implementation/review. If a
+task explicitly needs GitHub API access inside an agent, authorize that operation
+separately with the least access needed using local setup; the workflow does not
+forward raw tokens into agent prompts or provide an inheritance bypass. Manual
+Git operations still use your normal SSH agent or HTTPS helper.
 
 ### Publishing prerequisites
 
@@ -608,3 +590,42 @@ already generated during the accepted independent review.
 
 See [publishing lifecycle and retries](lifecycle.md#task-pr) for the frozen review
 contract and conservative refusal rules.
+
+## SSH agent on Linux
+
+Use one SSH agent for the development login/session and load your encrypted Git
+key once. Prefer your desktop/session-managed agent if `ssh-add -l` can reach it.
+On a shell-only host without an agent, run the following once in the shell that
+will start Herdr and the workflow (substitute your actual key path):
+
+```sh
+eval "$(ssh-agent -s)"
+ssh-add -t 8h "$HOME/.ssh/id_ed25519"
+ssh-add -l
+```
+
+Enter the key passphrase at `ssh-add`'s local prompt. `SSH_AUTH_SOCK` identifies the
+agent; all terminals running `task` and the Herdr process must inherit the same
+working socket. Start Herdr from that configured shell, or configure your login
+session to provide the socket to both. An existing Herdr process will not acquire
+new environment values from another terminal. Do not start a fresh agent in every
+shell's startup file, disable private-key encryption, or put the passphrase in
+configuration. Keys need reloading after the chosen lifetime, reboot, or agent
+restart. See [ssh-agent](https://man.openbsd.org/ssh-agent) and
+[ssh-add](https://man.openbsd.org/ssh-add).
+
+From the same shell as `task`, verify the setup before a private-repository start:
+
+```sh
+ssh-add -l
+git -C /absolute/path/to/repository ls-remote --heads origin
+git -C /absolute/path/to/repository ls-remote --heads origin
+```
+
+Both Git calls should complete without another key-passphrase prompt. Verify new
+host fingerprints through your normal trusted process; do not disable host-key
+checking. `ssh-add -l` reporting no identities means load the correct key; inability
+to contact the agent means repair the socket/session environment. If the key is
+loaded but Git fails, inspect key selection, repository access and host trust.
+AWL preserves Git's SSH configuration and reports failed fetch/remote lookup with
+SSH-agent recovery guidance. It does not start an agent or manage passphrases.

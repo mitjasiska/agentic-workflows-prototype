@@ -1,6 +1,7 @@
 """Exercise the actual stdio framing/lifecycle against a disposable fake server."""
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -45,6 +46,19 @@ sys.stdin.read()
                 params = {'threadId': 'exact-id', 'text': '\nα\r\n$(literal)\n'}
                 self.assertEqual(rpc.request('thread/read', params), params)
             self.assertIsNotNone(self.processes[0].poll())
+
+    def test_helper_does_not_inherit_github_tokens_but_keeps_provider_and_ssh_auth(self):
+        with patch.dict(os.environ, {"GH_TOKEN": "synthetic-controller", "GITHUB_TOKEN": "synthetic-fallback",
+                                     "GH_ENTERPRISE_TOKEN": "synthetic-enterprise", "GITHUB_ENTERPRISE_TOKEN": "synthetic-enterprise",
+                                     "OPENAI_API_KEY": "synthetic-provider", "SSH_AUTH_SOCK": "/tmp/test-agent.sock"}, clear=True), \
+                self.server("import os; print(json.dumps({'id': request['id'], 'result': dict(os.environ)}), flush=True)"):
+            with CodexRPC(Path('/tmp')) as rpc:
+                environment = rpc.request('thread/list', {})
+            for key in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"):
+                self.assertNotIn(key, environment)
+            self.assertEqual(environment['OPENAI_API_KEY'], 'synthetic-provider')
+            self.assertEqual(environment['SSH_AUTH_SOCK'], '/tmp/test-agent.sock')
+            self.assertEqual(os.environ['GH_TOKEN'], 'synthetic-controller')
 
     def test_api_error_is_sanitized(self):
         with self.server("print(json.dumps({'id': request['id'], 'error': {'message': 'secret'}}), flush=True)"):

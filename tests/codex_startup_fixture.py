@@ -54,6 +54,7 @@ class CodexStartupTransport:
         self.view_changes = {}
         self.extra_items = []
         self.command = test.enterContext(patch.object(Codex, "command", side_effect=self.herdr))
+        self.filter_credentials = test.enterContext(patch.object(Codex, "filter_shell_credentials"))
         self.keys = test.enterContext(patch("task_start.agent.run", side_effect=self.send_keys))
         test.enterContext(patch.object(Codex, "check_available"))
         self.sleep = MagicMock(side_effect=self.advance)
@@ -91,6 +92,7 @@ class CodexStartupTransport:
         if (group, operation) == ("agent", "start"):
             self.test.assertIsNone(self.started_at, "launch must never be retried")
             self.keys.assert_called_once()
+            self.filter_credentials.assert_called_once()
             self.started_at = self.now
             self.bootstrap = args[-1]
             self.pane = next(p for p in self.panes() if p["pane_id"] == self.target)
