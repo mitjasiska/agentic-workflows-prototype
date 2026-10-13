@@ -24,6 +24,7 @@ from .integrate import abandon_integration, integrate
 from .preparation import check_issue_structure, prepare_task
 from .workspace import Git, Herdr, slice_slug
 from .status import task_status
+from .dashboard_server import serve_dashboard
 
 
 def issue_identifier(value: str) -> str:
@@ -65,6 +66,10 @@ def parser() -> argparse.ArgumentParser:
     status.add_argument("issue", nargs="?", type=issue_identifier)
     status.add_argument("--all", action="store_true", help="List exactly registered AWL task workspaces by configured Linear project")
     status.add_argument("--json", action="store_true", help="Print the versioned canonical status projection")
+    dashboard = commands.add_parser("dashboard", help="Watch local task state in a read-only browser dashboard",
+        description="Serve the local dashboard on 127.0.0.1 only. Use your own SSH tunnel for remote access.")
+    dashboard.add_argument("--port", type=dashboard_port, default=8765,
+        help="Local TCP port (default: 8765; 0 selects a free port)")
     review_command = commands.add_parser("review", help="Run a fresh independent task review or an explicit re-review")
     review_command.add_argument("issue", type=issue_identifier)
     review_command.add_argument("--resume", metavar="REVIEW_CONTEXT_ID")
@@ -360,6 +365,16 @@ def retire_missing_contexts(identifier, repo, herdr, path=None):
             raise TaskError("Cannot confirm context checkout absence; registry mappings were retained") from None
 
 
+def dashboard_port(value: str) -> int:
+    try:
+        port = int(value)
+        if 0 <= port <= 65535:
+            return port
+    except ValueError:
+        pass
+    raise argparse.ArgumentTypeError("expected a port between 0 and 65535")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
@@ -374,6 +389,8 @@ def main(argv: list[str] | None = None) -> int:
                 raise TaskError("status requires either ISSUE or --all")
             result = task_status(args.issue)
             print(json.dumps(result.as_dict(), ensure_ascii=True, sort_keys=True) if args.json else result.render())
+        elif args.command == "dashboard":
+            serve_dashboard(port=args.port)
         elif args.command == "review":
             result = review(args.issue, resume=args.resume, agent_kind=args.agent_kind,
                             model=args.model, mode=args.mode, timeout=args.timeout)

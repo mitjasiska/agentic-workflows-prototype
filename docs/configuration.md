@@ -44,8 +44,19 @@ installation is required. On Windows, invoke
 `py -3.12 C:/path/to/agentic-workflows-lite/task start DEV-7`; a global Windows launcher
 is not included yet.
 
-The private runtime registry is `config/projects.toml` beside the CLI source,
-independent of the invoking directory. Only synthetic
+The private runtime registry is `config/projects.toml` in the permanent CLI
+checkout, independent of the invoking directory. When the CLI source is in a
+linked worktree, canonical config discovery verifies its Git identity and
+worktree registration, then verifies the permanent checkout shares that exact
+Git common directory. It reads the registry there; do not copy the registry into
+task worktrees. A competing worktree registry, aliased registry path, missing
+permanent checkout, or ambiguous Git identity is refused. Inherited Git selector
+variables cannot redirect this discovery. Status and the dashboard report
+configuration uncertainty through their existing read model instead of guessing
+a project. A standalone installation without Git metadata retains the sibling
+`config/projects.toml` path, with no parent-directory or caller-directory search.
+Explicit Python `load_projects(path)` calls retain their specified path.
+Only synthetic
 [examples](../config/projects.example.toml) are tracked. Match `linear_project`
 exactly to the Linear project name and set `repo_name` and `base_branch`. Missing,
 duplicate, unmatched, or still-marked example mappings fail before task preparation.
