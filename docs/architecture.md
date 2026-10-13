@@ -114,10 +114,17 @@ SSE sends only invalidation revisions and heartbeat comments, with at most 16
 concurrent streams. Every connection invalidates, including after a server
 restart; clients recover through `GET /api/snapshot`, never event replay.
 
-The server binds only to loopback, accepts local same-origin reads, exposes fixed
+The server binds only to `127.0.0.1`, accepts local same-origin reads, exposes fixed
 asset/API routes, and rejects writes. Local-host headers may use another port for
-an operator-owned SSH tunnel. No arbitrary file, task command, or provider API is
-reachable through HTTP. The frontend uses DOM text nodes for projected values
+an operator-owned SSH tunnel. The optional `--trusted-origin` adds one exact HTTPS
+authority: Host must match, and Origin must match when present. Cross-site fetches
+and ambiguous security headers are refused. Forwarded and Tailscale identity
+headers grant no trust; CSP and no-CORS behavior are unchanged. Tailscale Serve
+preserves the original Host and Origin for HTTP backends (see its
+[proxy implementation](https://github.com/tailscale/tailscale/blob/v1.102.4/ipn/ipnlocal/serve.go));
+AWL still receives plain HTTP over loopback. Access control belongs to tailnet
+policy, with no AWL authentication layer. No arbitrary file, task command, or
+provider API is reachable through HTTP. The frontend uses DOM text nodes for projected values
 and displays canonical guidance without computing recovery choices.
 
 Static assets live in repository-root [`web/`](../web/): `index.html`, `app.js`,

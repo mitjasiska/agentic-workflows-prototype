@@ -27,6 +27,24 @@ ASSETS = {'/': ('index.html', 'text/html; charset=utf-8'),
           '/styles.css': ('styles.css', 'text/css; charset=utf-8')}
 
 
+def trusted_https_origin(value):
+    """Accept one HTTPS DNS authority, normalizing it to a browser origin."""
+    match = re.fullmatch(r'https://([A-Za-z0-9.-]+)(?::([0-9]{1,5}))?/?', value)
+    if match:
+        host, port = match.groups()
+        labels = host.split('.')
+        if (len(host) <= 253
+                and all(re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?', label)
+                        for label in labels)
+                and (port is None or 1 <= int(port) <= 65535)):
+            authority = host.lower()
+            if port is not None and int(port) != 443:
+                authority += f':{int(port)}'
+            return f'https://{authority}'
+    raise TaskError('Trusted origin must be one HTTPS hostname with an optional port (1-65535); '
+                    'no credentials, wildcards, path, query, or fragment.')
+
+
 def asset_root():
     # Distribution contract: ship web/ beside task_start/, in the same release.
     # Never fall back to cwd or allow a request to choose a resource location.
@@ -126,7 +144,8 @@ class DashboardServer(ThreadingHTTPServer):
     daemon_threads = True
     block_on_close = False
 
-    def __init__(self, collector, *, port=DEFAULT_PORT):
+    def __init__(self, collector, *, port=DEFAULT_PORT, trusted_origin=None):
+        self.trusted_origin = trusted_https_origin(trusted_origin) if trusted_origin is not None else None
         self.collector = collector
         self.assets = load_assets()
         self.streams = threading.BoundedSemaphore(16)
@@ -168,17 +187,33 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def trusted_request(self):
+        # Repeated security headers are ambiguous, even when the first is valid.
+        if (len(self.headers.get_all('Host', [])) != 1
+                or len(self.headers.get_all('Origin', [])) > 1
+                or len(self.headers.get_all('Sec-Fetch-Site', [])) > 1):
+            return False
         host = self.headers.get('Host', '')
         origin = self.headers.get('Origin')
+        if self.headers.get('Sec-Fetch-Site') not in (None, 'same-origin', 'same-site', 'none'):
+            return False
         # Restrict browser reads as well as binding: no CORS or DNS rebinding.
         # A user's SSH tunnel can have a different local port from this server.
         local = re.fullmatch(r'(127\.0\.0\.1|localhost)(:[0-9]{1,5})?', host)
-        return (local is not None and (origin is None or origin == f'http://{host}')
-                and self.headers.get('Sec-Fetch-Site') != 'cross-site')
+        if local is not None and (origin is None or origin == f'http://{host}'):
+            return True
+        # Tailscale Serve preserves Host and Origin when proxying to loopback.
+        # Forwarded/identity headers never establish trust. Navigation and some
+        # same-origin GETs omit Origin, so require it to match only when present.
+        trusted = self.server.trusted_origin
+        if trusted is None:
+            return False
+        authority = trusted.removeprefix('https://')
+        hosts = {authority} if ':' in authority else {authority, f'{authority}:443'}
+        return host.lower() in hosts and (origin is None or origin == trusted)
 
     def do_GET(self):
         if not self.trusted_request():
-            self.respond(403, b'Local same-origin requests only.\n')
+            self.respond(403, b'Trusted same-origin requests only.\n')
             return
         path = urlsplit(self.path).path
         if path in self.server.assets:
@@ -230,10 +265,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
     do_POST = do_PUT = do_PATCH = do_DELETE = do_OPTIONS = reject_write
 
 
-def serve_dashboard(*, port=DEFAULT_PORT):
+def serve_dashboard(*, port=DEFAULT_PORT, trusted_origin=None):
     collector = SnapshotCollector()
     try:
-        server = DashboardServer(collector, port=port)
+        server = DashboardServer(collector, port=port, trusted_origin=trusted_origin)
     except OSError as error:
         raise TaskError(f'Cannot listen on {HOST}:{port}: {error.strerror}') from None
     previous = {}

@@ -314,8 +314,10 @@ Open the printed localhost URL, choose a configured Linear project, then inspect
 a task's current phase, progress, and attention guidance. Expand contexts,
 workspace details, and history when needed. The dashboard is read-only,
 requires no frontend build or Node runtime, and stops with Ctrl+C. Use `--port 0`
-to select a free port. See [local dashboard and SSH access](docs/lifecycle.md#task-dashboard)
-for stale-data behavior and access from another machine.
+to select a free port. Optional private Tailscale Serve access uses
+`--trusted-origin https://<device>.<tailnet>.ts.net`. See
+[dashboard access and background setup](docs/lifecycle.md#task-dashboard) for
+stale-data behavior, SSH forwarding, and setup-once Tailscale/systemd instructions.
 
 ### Find your conversations
 

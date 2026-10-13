@@ -24,7 +24,7 @@ from .integrate import abandon_integration, integrate
 from .preparation import check_issue_structure, prepare_task
 from .workspace import Git, Herdr, slice_slug
 from .status import task_status
-from .dashboard_server import serve_dashboard
+from .dashboard_server import serve_dashboard, trusted_https_origin
 
 
 def issue_identifier(value: str) -> str:
@@ -67,9 +67,12 @@ def parser() -> argparse.ArgumentParser:
     status.add_argument("--all", action="store_true", help="List exactly registered AWL task workspaces by configured Linear project")
     status.add_argument("--json", action="store_true", help="Print the versioned canonical status projection")
     dashboard = commands.add_parser("dashboard", help="Watch local task state in a read-only browser dashboard",
-        description="Serve the local dashboard on 127.0.0.1 only. Use your own SSH tunnel for remote access.")
+        description="Serve the local dashboard on 127.0.0.1 only. Remote access can use your own SSH tunnel "
+                    "or Tailscale Serve with --trusted-origin.")
     dashboard.add_argument("--port", type=dashboard_port, default=8765,
         help="Local TCP port (default: 8765; 0 selects a free port)")
+    dashboard.add_argument("--trusted-origin", type=dashboard_origin, metavar="HTTPS_ORIGIN",
+        help="Also allow this exact HTTPS origin through a local proxy (default: localhost HTTP only)")
     review_command = commands.add_parser("review", help="Run a fresh independent task review or an explicit re-review")
     review_command.add_argument("issue", type=issue_identifier)
     review_command.add_argument("--resume", metavar="REVIEW_CONTEXT_ID")
@@ -375,6 +378,13 @@ def dashboard_port(value: str) -> int:
     raise argparse.ArgumentTypeError("expected a port between 0 and 65535")
 
 
+def dashboard_origin(value: str) -> str:
+    try:
+        return trusted_https_origin(value)
+    except TaskError as error:
+        raise argparse.ArgumentTypeError(str(error)) from None
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
@@ -390,7 +400,7 @@ def main(argv: list[str] | None = None) -> int:
             result = task_status(args.issue)
             print(json.dumps(result.as_dict(), ensure_ascii=True, sort_keys=True) if args.json else result.render())
         elif args.command == "dashboard":
-            serve_dashboard(port=args.port)
+            serve_dashboard(port=args.port, trusted_origin=args.trusted_origin)
         elif args.command == "review":
             result = review(args.issue, resume=args.resume, agent_kind=args.agent_kind,
                             model=args.model, mode=args.mode, timeout=args.timeout)
