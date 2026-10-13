@@ -129,12 +129,28 @@ recorded merged executions remain visible while registered. Confirmed retirement
 removes them, including a selected task's detail. There is no task archive or
 remote Linear/GitHub refresh.
 
+The selected task's **Task report** area offers **Copy report** and an expandable,
+selectable plain-text view. Verified saved loops use the same complete rendering
+as `task loop ISSUE --status`, including findings, fixes, every recorded check
+(also `not_run`), final state, and human-intervention reasons. Paused, interrupted,
+and escalated loops retain available partial outcomes without implying success.
+Missing, unreadable, stale, or ambiguous evidence produces an unavailable state;
+safe canonical guidance is offered as **Copy diagnostics** when available. Saved
+controller exceptions and failed review results whose prose may contain raw
+exceptions also use diagnostics. No prompts or provider transcripts are exposed.
+Copy success is shown only after the clipboard write succeeds; if clipboard
+access fails, use **Select text** and copy manually. Reports are not archived
+after workspace cleanup.
+
 One shared collector reads persisted state at startup and waits five seconds
 after each completed projection before the next check. All browser clients read
 its cache. SSE notifications trigger full HTTP snapshot reads; opening or
 reconnecting also fetches the current snapshot, without replaying old events.
 The browser additionally reads the cache every 15 seconds for freshness and as
-a fallback if the event stream is unavailable. These reads do not poll Herdr.
+a fallback if the event stream is unavailable. These snapshot reads do not poll
+Herdr. Report text is fetched separately only for the selected execution, with
+fresh canonical identity/evidence checks. Selection changes discard old report
+responses, and refresh checks reports even when overview counts are unchanged.
 
 Uncertain/unavailable discovery retains the last complete projection with a
 visible stale/unverified notice and the latest discovery diagnostics. Before
@@ -178,8 +194,8 @@ https://<device>.<tailnet>.ts.net/
 
 Access is limited by **tailnet policy/ACLs**, with no AWL authentication layer.
 Permitted tailnet members can read workflow metadata, including task identities,
-workspace paths, and bounded history. Use private Serve, with no Funnel enabled
-for this endpoint. See [Tailscale Serve prerequisites and access control](https://tailscale.com/docs/features/tailscale-serve).
+workspace paths, bounded history, and selected task reports. Use private Serve,
+with no Funnel enabled for this endpoint. See [Tailscale Serve prerequisites and access control](https://tailscale.com/docs/features/tailscale-serve).
 
 On the workflow machine, check `tailscale serve --help` for the installed version
 and complete Tailscale's one-time HTTPS setup if prompted. Use a version supporting

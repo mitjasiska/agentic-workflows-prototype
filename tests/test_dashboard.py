@@ -18,7 +18,7 @@ from unittest.mock import Mock, patch
 
 from task_start import TaskError, cli, config
 from task_start import dashboard_server as dashboard
-from task_start.status import StatusReport, empty_task, guidance, task_status
+from task_start.status import StatusReport, empty_task, guidance, report_identity, task_loop_report, task_status
 import test_status as status_fixture
 from task_start.workspace import Herdr
 
@@ -26,6 +26,7 @@ from task_start.workspace import Herdr
 ROOT = Path(__file__).resolve().parents[1]
 TRUSTED_ORIGIN = 'https://dashboard.example.invalid'
 TRUSTED_HOST = 'dashboard.example.invalid'
+REPORT_URL = '/api/report?revision=1&task=0'
 
 
 def report(state='available', *, tasks=None):
@@ -162,7 +163,9 @@ class HTTPTests(unittest.TestCase):
         self.reader = Mock(side_effect=lambda: StatusReport(self.source))
         self.collector = dashboard.SnapshotCollector(self.reader)
         self.collector.refresh()
-        self.server = dashboard.DashboardServer(self.collector, port=0, trusted_origin=self.trusted_origin)
+        self.report_reader = Mock(return_value=dict(kind='report', message='Saved report', text='Complete report\nFinal line'))
+        self.server = dashboard.DashboardServer(self.collector, port=0, trusted_origin=self.trusted_origin,
+                                               report_reader=self.report_reader)
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs=dict(poll_interval=.01), daemon=True)
         self.thread.start()
         self.addCleanup(self.stop)
@@ -202,6 +205,77 @@ class HTTPTests(unittest.TestCase):
             self.assertEqual(response.getheader('Cache-Control'), 'no-store')
             self.assertIsNone(response.getheader('Access-Control-Allow-Origin'))
         self.assertEqual(self.reader.call_count, 1)
+        self.report_reader.assert_not_called()
+
+    def test_selected_report_is_complete_separate_and_keeps_security_headers(self):
+        content = ('Check full: not_run — recorded limitation\n' * 3000) + 'Final review: clean'
+        self.report_reader.return_value['text'] = content
+        for method in ('GET', 'HEAD'):
+            response, body = self.request(REPORT_URL, method)
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.getheader('Cache-Control'), 'no-store')
+            self.assertIsNone(response.getheader('Access-Control-Allow-Origin'))
+            self.assertIn("script-src 'self'", response.getheader('Content-Security-Policy'))
+            if method == 'GET':
+                self.assertEqual(json.loads(body), dict(self.report_reader.return_value, revision=1, task=0,
+                                                       identity=list(report_identity(self.source['tasks'][0]))))
+            else:
+                self.assertEqual(body, b'')
+        self.report_reader.assert_called_with(self.source['tasks'][0])
+        self.assertEqual(self.reader.call_count, 1, 'Report does not alter collector schedule')
+        self.assertNotIn(content, json.dumps(self.collector.snapshot()))
+
+    def test_report_selector_cannot_redirect_to_files_or_another_revision(self):
+        for query in ('', '?path=/etc/passwd', '?revision=1&task=/etc/passwd', '?revision=1&task=-1',
+                      '?revision=1&task=0&path=/etc/passwd', '?revision=1&task=0&task=1',
+                      '?revision=1&task=0.0', '?revision=01&task=0', '?revision=1&task=%2e%2e',
+                      '?revision=1&task=9999999999999999999999', '?revision=&task=0'):
+            response, _ = self.request('/api/report' + query)
+            self.assertEqual(response.status, 400, query)
+        for query in ('?revision=0&task=0', '?revision=2&task=0', '?revision=1&task=1'):
+            response, _ = self.request('/api/report' + query)
+            self.assertEqual(response.status, 409, query)
+        self.report_reader.assert_not_called()
+
+    def test_report_stale_discovery_and_read_failure_return_safe_diagnostics(self):
+        self.reader.return_value = None
+        self.source = report('unavailable')
+        self.collector.refresh()
+        response, body = self.request('/api/report?revision=2&task=0')
+        result = json.loads(body)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(result['kind'], 'diagnostics')
+        self.assertIn('unverified', result['text'])
+        self.assertIn('Discovery is unverified.', result['text'])
+        self.report_reader.assert_not_called()
+        self.source = report(tasks=[task()])
+        self.collector.refresh()
+        self.report_reader.side_effect = RuntimeError('PRIVATE exception transcript')
+        response, body = self.request('/api/report?revision=3&task=0')
+        self.assertEqual(response.status, 200)
+        self.assertEqual(json.loads(body)['kind'], 'diagnostics')
+        self.assertNotIn(b'PRIVATE', body)
+
+    def test_report_in_flight_selection_change_or_removal_discards_old_content(self):
+        def change(_):
+            self.source = report(tasks=[task('DEV-8')])
+            self.collector.refresh()
+            return dict(kind='report', text='OLD REPORT', message='Old')
+        self.report_reader.side_effect = change
+        response, body = self.request(REPORT_URL)
+        self.assertEqual(response.status, 409)
+        self.assertNotIn(b'OLD REPORT', body)
+        self.source = report()
+        self.collector.refresh()
+        response, _ = self.request('/api/report?revision=3&task=0')
+        self.assertEqual(response.status, 409)
+
+    def test_report_concurrency_is_bounded(self):
+        with patch.object(self.server, 'report_reads') as reads:
+            reads.acquire.return_value = False
+            response, _ = self.request(REPORT_URL)
+            self.assertEqual(response.status, 503)
+            self.report_reader.assert_not_called()
 
     def test_sse_invalidation_reconnect_ignores_missed_events_and_fetches_full_snapshot(self):
         connections = [self.connect(), self.connect()]
@@ -258,7 +332,7 @@ class HTTPTests(unittest.TestCase):
 
     def test_read_only_fixed_routes_no_arbitrary_files_or_commands(self):
         for method in ('POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'):
-            for path in ('/api/snapshot', '/api/events', '/task/start'):
+            for path in ('/api/snapshot', '/api/events', REPORT_URL, '/task/start'):
                 response, _ = self.request(path, method)
                 self.assertEqual(response.status, 405)
         for path in ('/../task_start/config.py', '/%2e%2e/config/local.toml', '/config/projects.toml', '/task', '/api/tasks/DEV-7', '/web/', '//example.invalid/secret'):
@@ -268,15 +342,16 @@ class HTTPTests(unittest.TestCase):
 
     def test_cross_origin_and_rebinding_reads_refused(self):
         for headers in ({'Host': 'attacker.invalid'}, {'Origin': 'https://attacker.invalid'}, {'Sec-Fetch-Site': 'cross-site'}):
-            response, _ = self.request('/api/snapshot', headers=headers)
-            self.assertEqual(response.status, 403)
+            for path in ('/api/snapshot', REPORT_URL):
+                response, _ = self.request(path, headers=headers)
+                self.assertEqual(response.status, 403)
         response, _ = self.request('/api/snapshot', headers={'Host': f'localhost:{self.server.server_port}', 'Origin': f'http://localhost:{self.server.server_port}'})
         self.assertEqual(response.status, 200)
         response, _ = self.request('/api/snapshot', headers={'Host': 'localhost:9876', 'Origin': 'http://localhost:9876'})
         self.assertEqual(response.status, 200, 'SSH forwarding may use a different local port')
 
     def test_extra_host_requires_explicit_opt_in_for_all_routes(self):
-        for route in (*dashboard.ASSETS, '/api/snapshot', '/api/events'):
+        for route in (*dashboard.ASSETS, '/api/snapshot', '/api/events', REPORT_URL):
             with self.subTest(route=route):
                 response, _ = self.request(route, 'HEAD', headers={'Host': TRUSTED_HOST})
                 self.assertEqual(response.status, 403 if self.trusted_origin is None else 200)
@@ -344,7 +419,7 @@ class TrustedOriginHTTPTests(HTTPTests):
             headers = {'Host': TRUSTED_HOST, 'Sec-Fetch-Site': 'same-origin'}
             if origin is not None:
                 headers['Origin'] = origin
-            for route in (*dashboard.ASSETS, '/api/snapshot'):
+            for route in (*dashboard.ASSETS, '/api/snapshot', REPORT_URL):
                 for method in ('GET', 'HEAD'):
                     with self.subTest(route=route, method=method, origin=origin):
                         response, body = self.request(route, method, headers)
@@ -359,8 +434,10 @@ class TrustedOriginHTTPTests(HTTPTests):
                             self.assertEqual(body, b'')
                         elif route in dashboard.ASSETS:
                             self.assertEqual(body, (ROOT / 'web' / dashboard.ASSETS[route][0]).read_bytes())
-                        else:
+                        elif route == '/api/snapshot':
                             self.assertEqual(json.loads(body)['projection'], self.source)
+                        else:
+                            self.assertEqual(json.loads(body)['text'], self.report_reader.return_value['text'])
         for host in (TRUSTED_HOST + ':443', TRUSTED_HOST.upper()):
             response, _ = self.request('/', headers={'Host': host, 'Origin': TRUSTED_ORIGIN})
             self.assertEqual(response.status, 200)
@@ -380,7 +457,7 @@ class TrustedOriginHTTPTests(HTTPTests):
         headers_to_reject += [{'Host': TRUSTED_HOST, 'Origin': TRUSTED_ORIGIN, 'Sec-Fetch-Site': 'cross-site'},
                               {'Host': 'localhost', 'Origin': TRUSTED_ORIGIN}]
         for headers in headers_to_reject:
-            for route in ('/', '/app.js', '/api/snapshot', '/api/events'):
+            for route in ('/', '/app.js', '/api/snapshot', '/api/events', REPORT_URL):
                 with self.subTest(headers=headers, route=route):
                     response, body = self.request(route, headers=headers)
                     self.assertEqual(response.status, 403)
@@ -435,6 +512,40 @@ class CanonicalAdaptationTests(unittest.TestCase):
         self.fixture = status_fixture.StatusTests()
         self.addCleanup(self.fixture.doCleanups)
         self.fixture.setUp()
+
+    def test_selected_http_report_uses_real_checkpoint_then_missing_checkpoint_diagnostics(self):
+        fixture = self.fixture
+        expected = fixture.run_loop().render()
+        collector = dashboard.SnapshotCollector(lambda: fixture.report(None))
+        collector.refresh()
+        server = dashboard.DashboardServer(collector, port=0, report_reader=lambda task: task_loop_report(task,
+            registry=fixture.registry, identities=fixture.identities, projects=fixture.projects,
+            projects_root=fixture.repo.parent))
+        thread = threading.Thread(target=server.serve_forever, kwargs=dict(poll_interval=.01))
+        thread.start()
+        connection = http.client.HTTPConnection('127.0.0.1', server.server_port, timeout=10)
+        try:
+            connection.request('GET', REPORT_URL)
+            response = connection.getresponse()
+            body = json.loads(response.read())
+            self.assertEqual(response.status, 200)
+            self.assertEqual(body['kind'], 'report')
+            self.assertEqual(body['text'], expected)
+            self.assertNotIn(expected, json.dumps(collector.snapshot()))
+            fixture.store.path.unlink()
+            connection.request('GET', REPORT_URL)
+            response = connection.getresponse()
+            body = json.loads(response.read())
+            self.assertEqual(response.status, 200)
+            self.assertEqual(body['kind'], 'diagnostics')
+            self.assertIn('No saved loop report exists', body['text'])
+            self.assertFalse(fixture.store.path.exists())
+        finally:
+            connection.close()
+            collector.close()
+            server.shutdown()
+            server.server_close()
+            thread.join(2)
 
     def test_real_canonical_guidance_history_and_no_sensitive_report_prose(self):
         fixture = self.fixture

@@ -1,10 +1,12 @@
 """Canonical, read-only local task projection. No controller or history writer.
 
-Only allowlisted identities and outcomes cross this seam. Reports, prompts,
-publication bodies and provider transcripts stay in their owning stores.
+The overview exports allowlisted identities and outcomes. Selected loop reports
+reuse their owning renderer after verification; prompts, publication bodies and
+provider transcripts never cross either read seam.
 """
 
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 import re
@@ -281,9 +283,11 @@ def empty_task(issue, repo, path, projects, root):
         cleanup=[], uncertainties=[], history=dict(limit=HISTORY_LIMIT, ordering='source_order', truncated=False, entries=[]))
 
 
-def read_task(issue, repo, path, contexts, registry, projects, root, discovery, entries, endpoint, herdr_factory):
+def read_task(issue, repo, path, contexts, registry, projects, root, discovery, entries, endpoint, herdr_factory,
+              *, loop_report=None):
     try:
-        return _read_task(issue, repo, path, contexts, registry, projects, root, discovery, entries, endpoint, herdr_factory)
+        return _read_task(issue, repo, path, contexts, registry, projects, root, discovery, entries, endpoint,
+                          herdr_factory, loop_report=loop_report)
     except READ_ERRORS:
         # Even malformed shapes in older, less strictly decoded records must be
         # represented as uncertainty, never an empty overview or a traceback.
@@ -294,7 +298,8 @@ def read_task(issue, repo, path, contexts, registry, projects, root, discovery, 
         return task
 
 
-def _read_task(issue, repo, path, contexts, registry, projects, root, discovery, entries, endpoint, herdr_factory):
+def _read_task(issue, repo, path, contexts, registry, projects, root, discovery, entries, endpoint, herdr_factory,
+               *, loop_report=None):
     related = [c for c in contexts if c['issue'] == issue and c['repository'] == repo
                and c['worktree'] == path and c['role'] in {'implementation', 'review'}]
     active = [c for c in related if not c['retired_at']]
@@ -699,6 +704,16 @@ def _read_task(issue, repo, path, contexts, registry, projects, root, discovery,
         truncated=len(events) > HISTORY_LIMIT or history_truncated,
         entries=events[-HISTORY_LIMIT:])
     task['guidance'] = guidance(task, observable)
+    if (loop_report is not None and loop and task['workspace']['registration'] == 'registered'
+            and not any(e['code'] not in {'controller', 'observation', 'selection'} for e in errors)
+            and task['state'] != 'stale_review'
+            and (loop['status'] != 'clean' or task['review']['acceptance'] == 'valid')):
+        # Render only the selected task, from the same checkpoint pair that the
+        # canonical reader verified and re-read above. Never add prose to status.
+        try:
+            loop_report['text'] = render_loop_report(loop, pause)
+        except READ_ERRORS:
+            pass  # The overview remains unchanged; the selected report is unavailable.
     return task
 
 
@@ -716,6 +731,12 @@ class StatusReport:
 def task_status(identifier=None, *, registry=None, projects=None, projects_root=None,
                 identities=None, herdr_factory=Herdr):
     """None selects the dashboard overview; ISSUE retains broader diagnostics."""
+    return _task_status(identifier, registry=registry, projects=projects, projects_root=projects_root,
+                        identities=identities, herdr_factory=herdr_factory)
+
+
+def _task_status(identifier=None, *, registry=None, projects=None, projects_root=None,
+                 identities=None, herdr_factory=Herdr, report_target=None, loop_report=None):
     registry, identities = registry or ContextRegistry(), identities or HerdrContexts()
     errors = []
     if projects is None or projects_root is None:
@@ -754,8 +775,11 @@ def task_status(identifier=None, *, registry=None, projects=None, projects_root=
             if c['role'] in {'implementation', 'review'} and c['repository'] and c['worktree']
             and (c['issue'] == identifier if identifier else not c['retired_at'])})
         for issue, repo, path in candidates:
+            if report_target is not None and (issue, repo, path) != (
+                    report_target['issue'], report_target['repository']['path'], report_target['workspace']['path']):
+                continue
             task = read_task(issue, repo, path, contexts, registry, projects, projects_root, discovery,
-                             entries, endpoint, herdr_factory)
+                             entries, endpoint, herdr_factory, loop_report=loop_report)
             if identifier or task['workspace']['registration'] == 'registered':
                 tasks.append(task)
             elif task['workspace']['registration'] == 'unknown' and discovery == 'available':
@@ -788,6 +812,83 @@ def task_status(identifier=None, *, registry=None, projects=None, projects_root=
                   for p in groups],
         unverified_project_tasks=[n for n, t in enumerate(tasks) if t['project']['state'] != 'verified'],
         tasks=None if not identifier and discovery == 'unavailable' else tasks))
+
+
+def report_identity(task):
+    return (task['issue'], task['repository']['path'], *(task['workspace'][key]
+            for key in ('path', 'branch', 'workspace_id', 'endpoint')))
+
+
+def render_loop_report(state, pause):
+    from .implementation_pass import parse_implementation
+    from .loop import report
+    from .review_result import parse_verdict
+
+    # Controller exceptions and failed review primitives can persist arbitrary
+    # exception bodies. Their prose has no safe report provenance; use canonical
+    # diagnostics instead. Structured blocked outcomes remain fully reportable.
+    if ('. Inspect contexts before recovery; no handoff was retried' in state['reason']
+            or '. No initial handoff was claimed; rerun task loop ' in state['reason']):
+        raise TaskError('Unfiltered controller failure')
+    findings = []
+    for record in state['records']:
+        value = {key: record[key] for key in ('pass_id', 'state', 'summary', 'checks')}
+        if record['phase'] in {'review', 'rereview'}:
+            if record['state'] == 'failed' or record['resolutions']:
+                raise TaskError('Unfiltered review failure')
+            value['findings'] = record['findings']
+            parse_verdict(json.dumps(value), record['pass_id'], routing=True)
+            findings = record['findings']
+        else:
+            if record['findings']:
+                raise TaskError('Unexpected implementation findings')
+            value['resolutions'] = record['resolutions']
+            if 'task_assessment' in record:
+                value['task_assessment'] = record['task_assessment']
+            parse_implementation(json.dumps(value), record['pass_id'], findings,
+                                 assessment_enabled='task_assessment' in record)
+    return report(state, pause).render()
+
+
+def unavailable_report(message, task=None, discovery=None):
+    """Only canonical, allowlisted diagnostics; never exception/provider text."""
+    lines = [message]
+    if task:
+        lines.extend([f"{task['issue']} — {task['workspace']['path']}",
+                      f"Last observed state: {task['state']}; phase: {task['phase'] or 'unknown'}",
+                      f"Recorded guidance: {task['guidance']['message']}"])
+        if task['guidance']['command']:
+            lines.append(task['guidance']['command'])
+        for option in task['guidance']['options']:
+            lines.extend([f"Conditional guidance: {option['message']}", option['command']])
+        lines.extend(e['message'] for e in task['uncertainties'])
+    lines.extend(e['message'] for e in (discovery or {}).get('uncertainties', []))
+    return dict(kind='diagnostics' if len(lines) > 1 else 'unavailable', message=message,
+                text='\n'.join(lines) if len(lines) > 1 else None)
+
+
+def task_loop_report(selected, **kwargs):
+    """Read a server-selected execution through canonical identity validation.
+
+    selected must come from the dashboard's status cache, never client paths.
+    No registry/checkpoint writes, provider history reads, or loop control calls.
+    """
+    rendered = {}
+    status = _task_status(selected['issue'], report_target=selected, loop_report=rendered, **kwargs).as_dict()
+    matches = [task for task in status['tasks'] if report_identity(task) == report_identity(selected)]
+    if len(matches) != 1:
+        return unavailable_report('Task report unavailable: the selected execution could not be verified.',
+                                  discovery=status['discovery'])
+    task = matches[0]
+    if status['discovery']['state'] != 'available':
+        return unavailable_report('Task report unavailable: discovery is unverified; refresh before using recorded guidance.',
+                                  task, status['discovery'])
+    if 'text' in rendered:
+        return dict(kind='report', message='Saved loop report (CLI format). Recorded outcomes do not prove current agent activity.',
+                    text=rendered['text'])
+    missing = task['loop'] is None and not task['uncertainties']
+    return unavailable_report('No saved loop report exists for this task.' if missing else
+                              'Task report unavailable: saved evidence is unreadable, stale, or cannot be verified.', task)
 
 
 def render_status(value):

@@ -3,6 +3,7 @@
 import copy
 import io
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -15,7 +16,7 @@ from task_start.loop import LoopRuntime
 from task_start.publication_state import PublicationStore
 from task_start.review import review
 from task_start.review_handoff_state import ReviewHandoffStore
-from task_start.status import task_status, HISTORY_LIMIT
+from task_start.status import task_loop_report, task_status, HISTORY_LIMIT
 from task_start.workspace import Git, Herdr
 import test_loop as loops
 import test_publish as publishing
@@ -611,6 +612,188 @@ class StatusTests(unittest.TestCase):
         for group in result['projects']:
             self.assertEqual(len(group['tasks']), 1)
             self.assertEqual(result['tasks'][group['tasks'][0]]['project']['linear_project'], group['linear_project'])
+
+
+class TaskLoopReportTests(unittest.TestCase):
+    def setUp(self):
+        self.fixture = StatusTests()
+        self.addCleanup(self.fixture.doCleanups)
+        self.fixture.setUp()
+
+    def read(self, selected=None):
+        f = self.fixture
+        return task_loop_report(selected or f.detail(), registry=f.registry, identities=f.identities,
+                                projects=f.projects, projects_root=f.repo.parent)
+
+    def write_checkpoint(self, state):
+        with sqlite3.connect(self.fixture.store.path) as db:
+            db.execute('UPDATE checkpoint SET payload=? WHERE id=1', (json.dumps(state),))
+
+    def test_complete_cli_report_with_findings_fixes_and_every_check_without_overview_prose(self):
+        f = self.fixture
+        checks = [dict(name=f'check {i}', result='not_run' if i % 2 else 'passed',
+                       details=f'Limitation {i}: ' + 'long recorded detail ' * 100) for i in range(80)]
+        f.impl_overrides = dict(checks=checks, summary='Full implementation summary')
+        f.review_results = [loops.findings(loops.finding()), {}]
+        f.run_loop()
+        before = {p: p.read_bytes() for p in (f.store.path, f.registry.path)}
+        result = self.read()
+        self.assertEqual(result['kind'], 'report', result)
+        self.assertEqual(result['text'], loops.loop('DEV-7', action='status').render())
+        for check in checks:
+            self.assertIn(f"Check {check['name']}: {check['result']} — {check['details']}", result['text'])
+        for text in ('Implementation (implementation): Full implementation summary', 'Review 1: findings',
+                     'F1 [implementation/high]', 'Fix F1: Fixed F1', 'Review 2: clean', 'human action required: no'):
+            self.assertIn(text, result['text'])
+        overview = json.dumps(f.report(None).as_dict())
+        for text in ('Full implementation summary', 'Limitation 79', 'Defect 1', 'Fixed F1', 'Current requirements'):
+            self.assertNotIn(text, overview)
+        for path, content in before.items():
+            self.assertEqual(path.read_bytes(), content, 'Report/status reads must not mutate persistence')
+
+    def test_paused_partial_report_and_sticky_pause_match_cli(self):
+        f = self.fixture
+        f.on_implementation = lambda *_: f.pause()
+        f.run_loop()
+        result = self.read()
+        self.assertEqual(result['kind'], 'report', result)
+        self.assertEqual(result['text'], loops.loop('DEV-7', action='status').render())
+        self.assertIn('loop: paused', result['text'])
+        self.assertIn('Implementation (implementation)', result['text'])
+        self.assertIn('Final review: not_run; human action required: yes', result['text'])
+        self.assertIn('Pause-after-current requested', result['text'])
+
+    def test_interrupted_partial_report_does_not_infer_success(self):
+        f = self.fixture
+        f.on_review = lambda *_: (_ for _ in ()).throw(KeyboardInterrupt())
+        f.run_loop()
+        result = self.read()
+        self.assertEqual(result['kind'], 'report', result)
+        self.assertEqual(result['text'], loops.loop('DEV-7', action='status').render())
+        self.assertIn('loop: interrupted', result['text'])
+        self.assertIn('original agent may still be working', result['text'])
+        self.assertIn('human action required: yes', result['text'])
+
+    def test_blocked_assessment_reason_questions_and_failed_check_are_retained(self):
+        f = self.fixture
+        f.impl_overrides = dict(state='blocked', summary='Choose the required behavior',
+            checks=[dict(name='browser', result='failed', details='Socket unavailable')],
+            task_assessment=dict(state='blocked', summary='Product decision required', questions=['Which behavior?']))
+        f.run_loop()
+        result = self.read()
+        self.assertEqual(result['kind'], 'report', result)
+        for text in ('loop: escalated', 'Choose the required behavior', 'Question: Which behavior?',
+                     'Check browser: failed — Socket unavailable', 'human action required: yes'):
+            self.assertIn(text, result['text'])
+
+    def test_missing_checkpoint_is_honest_diagnostics_and_does_not_create_storage(self):
+        f = self.fixture
+        result = self.read()
+        self.assertEqual(result['kind'], 'diagnostics')
+        self.assertEqual(result['message'], 'No saved loop report exists for this task.')
+        self.assertIn(f.detail()['guidance']['message'], result['text'])
+        self.assertFalse(f.store.path.exists())
+
+    def test_unreadable_and_malformed_records_never_expose_exception_or_nested_prose(self):
+        f = self.fixture
+        f.run_loop()
+        selected = f.detail()
+        with patch.object(type(f.store), 'read', side_effect=TaskError('PRIVATE provider transcript')):
+            result = self.read(selected)
+        self.assertNotEqual(result['kind'], 'report')
+        self.assertNotIn('PRIVATE', json.dumps(result))
+        state, _ = f.store.read()
+        for index, changes in ((0, {'checks': [dict(name='unit', result='imaginary', details='PRIVATE')]}),
+                               (0, {'checks': [dict(name='unit', result='passed', details={'transcript': 'PRIVATE'})]}),
+                               (0, {'resolutions': [dict(finding_id='F1', summary={'raw': 'PRIVATE'})]}),
+                               (1, {'resolutions': [dict(finding_id='F1', summary={'raw': 'PRIVATE'})]})):
+            changed = copy.deepcopy(state)
+            changed['records'][index].update(changes)
+            self.write_checkpoint(changed)
+            result = self.read(selected)
+            self.assertNotEqual(result['kind'], 'report', changes)
+            self.assertNotIn('PRIVATE', json.dumps(result))
+
+    def test_review_only_report_does_not_invent_implementation_results(self):
+        f = self.fixture
+        expected = f.run_loop(from_review=True).render()
+        result = self.read()
+        self.assertEqual(result['kind'], 'report', result)
+        self.assertEqual(result['text'], expected)
+        self.assertNotIn('Implementation (', result['text'])
+        self.assertIn('1 passes, 1 reviews', result['text'])
+
+    def test_raw_persisted_controller_exception_is_diagnostics_only(self):
+        f = self.fixture
+        f.on_implementation = lambda *_: (_ for _ in ()).throw(RuntimeError('PRIVATE provider transcript'))
+        f.run_loop()
+        result = self.read()
+        self.assertEqual(result['kind'], 'diagnostics', result)
+        self.assertNotIn('PRIVATE', json.dumps(result))
+
+    def test_raw_persisted_failed_review_exception_is_diagnostics_only(self):
+        f = self.fixture
+        # Legacy failed-review summaries do not distinguish structured outcomes
+        # from the review primitive's caught exception strings.
+        f.review_results = [dict(state='failed', summary='PRIVATE review transport output', checks=[], findings=[])]
+        f.run_loop()
+        self.assertIn('PRIVATE', f.store.read()[0]['records'][-1]['summary'])
+        result = self.read()
+        self.assertEqual(result['kind'], 'diagnostics', result)
+        self.assertNotIn('PRIVATE', json.dumps(result))
+
+    def test_stale_clean_acceptance_withholds_saved_success(self):
+        f = self.fixture
+        f.run_loop()
+        selected = f.detail()
+        (f.path / 'tracked.txt').write_text('unreviewed follow-up')
+        result = self.read(selected)
+        self.assertEqual(result['kind'], 'diagnostics')
+        self.assertIn('stale_review', result['text'])
+        self.assertNotIn('human action required: no', result['text'])
+
+    def test_identity_changes_and_ambiguity_withhold_other_execution_report(self):
+        f = self.fixture
+        f.run_loop()
+        selected = f.detail()
+        for group, key, value in [('workspace', 'path', '/tmp/not-a-task'), ('workspace', 'workspace_id', 'wrong'),
+                                  ('workspace', 'endpoint', '/wrong.sock'), ('workspace', 'branch', 'dev-7-other'),
+                                  ('repository', 'path', '/tmp/other-repo')]:
+            changed = copy.deepcopy(selected)
+            changed[group][key] = value
+            self.assertNotEqual(self.read(changed)['kind'], 'report', (group, key))
+        state, _ = f.store.read()
+        for key, value in [('issue', 'DEV-8'), ('worktree', '/other'), ('repository', '/other'),
+                           ('workspace_id', 'w2'), ('endpoint', '/other.sock'), ('branch', 'dev-7-other')]:
+            changed = copy.deepcopy(state)
+            changed['binding'][key] = value
+            self.write_checkpoint(changed)
+            self.assertNotEqual(self.read(selected)['kind'], 'report', key)
+        self.write_checkpoint(state)
+        entries = Herdr(f.repo).workspaces()
+        with patch.object(Herdr, 'workspaces', return_value=entries + entries):
+            self.assertNotEqual(self.read(selected)['kind'], 'report')
+        contexts = f.registry.list(include_retired=True)
+        next(c for c in contexts if c['context_id'] == f.implementation)['model'] = 'different-model'
+        with patch.object(f.registry, 'list', return_value=contexts):
+            self.assertNotEqual(self.read(selected)['kind'], 'report')
+
+    def test_checkpoint_or_discovery_change_during_read_discards_report(self):
+        f = self.fixture
+        f.run_loop()
+        selected = f.detail()
+        original = f.store.read()
+        changed = copy.deepcopy(original)
+        changed[0]['reason'] = 'Changed report'
+        with patch.object(type(f.store), 'read', side_effect=[original, changed]):
+            self.assertNotEqual(self.read(selected)['kind'], 'report')
+        entries = Herdr(f.repo).workspaces()
+        with patch.object(Herdr, 'workspaces', side_effect=[entries, []]):
+            self.assertNotEqual(self.read(selected)['kind'], 'report')
+        with patch.object(Herdr, 'workspaces', side_effect=TaskError('PRIVATE outage')):
+            result = self.read(selected)
+            self.assertNotEqual(result['kind'], 'report')
+            self.assertNotIn('PRIVATE', json.dumps(result))
 
 
 class PublicationStatusTests(unittest.TestCase):

@@ -10,6 +10,9 @@ let pending = false;
 let fetching = false;
 let fetchError = false;
 let live = false;
+let reportView = null;
+let reportRequest = 0;
+let reportController = null;
 const byId = (id) => document.getElementById(id);
 const label = (value) => {
   if (value == null) return 'Unknown';
@@ -22,7 +25,7 @@ const node = (tag, text, className) => {
   if (className) element.className = className;
   return element;
 };
-const taskKey = (task) => JSON.stringify([task.issue, task.repository.path, task.workspace.path, task.workspace.workspace_id]);
+const taskKey = (task) => JSON.stringify([task.issue, task.repository.path, task.workspace.path, task.workspace.branch, task.workspace.workspace_id, task.workspace.endpoint]);
 const stamp = (value) => value ? new Date(value).toLocaleString() : 'Unknown';
 function badge(state, phase) {
   const element = node('span', label(state), 'badge');
@@ -88,6 +91,132 @@ function statusCard(parent, title, state, note) {
   card.append(node('h3', title), node('strong', label(state)), node('p', note));
   parent.append(card);
 }
+function clearReport() {
+  reportController?.abort();
+  reportRequest++;
+  reportView = null;
+}
+function reportArea(task) {
+  const key = taskKey(task);
+  if (reportView?.key === key) return reportView.area;
+  clearReport();
+  const area = node('section', null, 'detail-section task-report');
+  const message = node('p', 'Loading saved report…', 'muted');
+  const actions = node('div', null, 'report-actions');
+  const copy = node('button', 'Copy report');
+  const select = node('button', 'Select text');
+  for (const [button, name] of [[copy, 'copy'], [select, 'select']]) {
+    button.type = 'button';
+    button.disabled = true;
+    button.dataset.focusKey = `report:${key}:${name}`;
+  }
+  const feedback = node('p', '', 'muted');
+  feedback.setAttribute('role', 'status');
+  const details = disclosure(area, 'Inspect report text', 'report');
+  details.hidden = true;
+  const text = node('textarea');
+  text.readOnly = true;
+  text.rows = 10;
+  text.setAttribute('aria-label', 'Task report text');
+  text.dataset.focusKey = `report:${key}:text`;
+  details.append(text);
+  actions.append(copy, select);
+  area.prepend(node('h3', 'Task report'), message, actions, feedback);
+  // The disclosure and textarea survive same-task renders, preserving selection.
+  const view = {key, area, message, copy, select, feedback, details, text, data: null, loading: true, copyOperation: null};
+  reportView = view;
+  select.addEventListener('click', () => {
+    if (reportView !== view || view.loading || !view.data?.text) return;
+    details.open = true;
+    text.focus();
+    text.select();
+  });
+  copy.addEventListener('click', async () => {
+    if (reportView !== view || selectedTask !== key || view.loading || view.copyOperation || !view.data?.text) return;
+    const operation = {};
+    view.copyOperation = operation;
+    copy.disabled = true;
+    feedback.textContent = '';
+    try {
+      await navigator.clipboard.writeText(view.data.text);
+      if (reportView === view && view.copyOperation === operation) feedback.textContent = view.data.kind === 'report' ? 'Report copied.' : 'Diagnostics copied.';
+    } catch (_) {
+      if (reportView === view && view.copyOperation === operation) {
+        feedback.textContent = 'Clipboard access failed. Use Select text, then copy manually.';
+        details.open = true;
+      }
+    } finally {
+      if (reportView === view && view.copyOperation === operation) {
+        view.copyOperation = null;
+        copy.disabled = view.loading || !view.data?.text;
+      }
+    }
+  });
+  return area;
+}
+function showReport(view, data) {
+  // Clipboard operations belong to the displayed content, not a polling request.
+  if (view.data?.kind !== data.kind || view.data?.text !== data.text) {
+    view.copyOperation = null;
+    view.feedback.textContent = '';
+  }
+  view.data = data;
+  view.loading = false;
+  view.message.textContent = data.message;
+  view.copy.textContent = data.kind === 'diagnostics' ? 'Copy diagnostics' : 'Copy report';
+  view.copy.disabled = !data.text || view.copyOperation !== null;
+  view.select.disabled = !data.text;
+  view.text.setAttribute('aria-label', data.kind === 'diagnostics' ? 'Task diagnostics text' : 'Task report text');
+  // Assigning value on every poll would reset a user's manual selection.
+  if (view.text.value !== (data.text || '')) view.text.value = data.text || '';
+  view.details.hidden = !data.text;
+}
+function reportDiagnostics(message, task) {
+  if (!task) return {kind: 'unavailable', message, text: null};
+  const lines = [message, 'Retained diagnostics; task evidence may be stale.',
+    `${task.issue} — ${task.workspace.path}`, `Last observed state: ${task.state}; phase: ${task.phase || 'unknown'}`,
+    `Recorded guidance: ${task.guidance.message}`];
+  if (task.guidance.command) lines.push(task.guidance.command);
+  for (const option of task.guidance.options) lines.push(`Conditional guidance: ${option.message}`, option.command);
+  for (const error of task.uncertainties) lines.push(error.message);
+  for (const error of snapshot?.discovery?.uncertainties || []) lines.push(error.message);
+  return {kind: 'diagnostics', message, text: lines.join('\n')};
+}
+async function refreshReport() {
+  reportController?.abort();
+  const request = ++reportRequest;
+  const view = reportView;
+  if (!view) return;
+  const index = snapshot?.projection?.tasks?.findIndex((task) => taskKey(task) === view.key);
+  const task = snapshot?.projection?.tasks?.[index];
+  if (fetchError || index == null || index < 0) {
+    showReport(view, reportDiagnostics('Task report unavailable: the current task selection could not be refreshed. Retrying automatically.', task));
+    return;
+  }
+  const revision = snapshot.revision;
+  if (snapshot.stale || view.revision !== revision) showReport(view, {kind: 'unavailable', text: null, message: 'Checking available report…'});
+  view.revision = revision;
+  view.loading = true;
+  view.copy.disabled = view.select.disabled = true;
+  view.message.textContent = 'Checking saved report…';
+  const controller = new AbortController();
+  reportController = controller;
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const response = await fetch(`/api/report?revision=${revision}&task=${index}`, {cache: 'no-store', signal: controller.signal});
+    if (!response.ok) throw new Error('Report unavailable');
+    const data = await response.json();
+    if (data.revision !== revision || data.task !== index || JSON.stringify(data.identity) !== view.key
+        || !['report', 'diagnostics', 'unavailable'].includes(data.kind)
+        || typeof data.message !== 'string' || (data.text !== null && typeof data.text !== 'string')) throw new Error('Unverified report');
+    if (reportView === view && request === reportRequest) showReport(view, data);
+  } catch (_) {
+    if (reportView === view && request === reportRequest) showReport(view,
+      reportDiagnostics('Task report unavailable: the selected report could not be verified or fetched. Retrying automatically.', task));
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 function renderDetail(task) {
   const detail = byId('task-detail');
   const sameTask = task && detail.dataset.taskKey === taskKey(task);
@@ -96,6 +225,7 @@ function renderDetail(task) {
   detail.dataset.taskKey = task ? taskKey(task) : '';
   detail.append(node('p', '3 · State, contexts & history', 'eyebrow'));
   if (!task) {
+    clearReport();
     detail.append(node('h2', 'No task selected'), node('p', 'Choose a task to inspect its current state, agents, and saved history.', 'muted'));
     return;
   }
@@ -127,6 +257,7 @@ function renderDetail(task) {
     warnings.classList.add('warning');
     for (const error of task.uncertainties) warnings.append(node('p', error.message));
   }
+  detail.append(reportArea(task));
   const statuses = node('div', null, 'status-grid');
   statusCard(statuses, 'Review', task.review.state, `Acceptance: ${label(task.review.acceptance)}`);
   statusCard(statuses, 'Integration', task.integration?.state || 'not_recorded', task.integration?.context_id ? 'Agent context recorded' : 'No selected integration context');
@@ -243,6 +374,7 @@ function render() {
     replacement?.focus({preventScroll: true});
   }
   renderNotices();
+  refreshReport();
 }
 
 function renderNotices() {
@@ -286,9 +418,10 @@ async function refresh() {
         if (signature !== rendered) {
           rendered = signature;
           render();
-        }
+        } else refreshReport();
       } catch (_) {
         fetchError = true;
+        refreshReport();
       } finally {
         clearTimeout(timeout);
       }

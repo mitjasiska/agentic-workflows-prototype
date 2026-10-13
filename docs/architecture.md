@@ -114,6 +114,16 @@ SSE sends only invalidation revisions and heartbeat comments, with at most 16
 concurrent streams. Every connection invalidates, including after a server
 restart; clients recover through `GET /api/snapshot`, never event replay.
 
+`GET /api/report?revision=N&task=INDEX` resolves one execution from that exact
+cached snapshot. It accepts no filesystem selector, rechecks canonical task and
+checkpoint identity, and renders the verified checkpoint with `LoopResult.render()`.
+At most two report reads run concurrently. Complete report text stays out of the
+overview/cache and is fetched only for the selected task. Unverified evidence
+returns safe canonical diagnostics; raw saved controller/review exceptions are
+not reportable. The response carries the selected identity as well as revision
+and index, so clients also reject mismatches across server restarts. Clipboard
+feedback follows the actual write result, with selectable text as a fallback.
+
 The server binds only to `127.0.0.1`, accepts local same-origin reads, exposes fixed
 asset/API routes, and rejects writes. Local-host headers may use another port for
 an operator-owned SSH tunnel. The optional `--trusted-origin` adds one exact HTTPS

@@ -12,10 +12,10 @@ from pathlib import Path
 import re
 import signal
 import threading
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from . import TaskError
-from .status import task_status
+from .status import report_identity, task_loop_report, task_status, unavailable_report
 
 
 HOST = '127.0.0.1'
@@ -144,11 +144,13 @@ class DashboardServer(ThreadingHTTPServer):
     daemon_threads = True
     block_on_close = False
 
-    def __init__(self, collector, *, port=DEFAULT_PORT, trusted_origin=None):
+    def __init__(self, collector, *, port=DEFAULT_PORT, trusted_origin=None, report_reader=None):
         self.trusted_origin = trusted_https_origin(trusted_origin) if trusted_origin is not None else None
         self.collector = collector
         self.assets = load_assets()
         self.streams = threading.BoundedSemaphore(16)
+        self.report_reader = report_reader or task_loop_report
+        self.report_reads = threading.BoundedSemaphore(2)
         super().__init__((HOST, port), DashboardHandler)
 
     @property
@@ -222,6 +224,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path == '/api/snapshot':
             body = json.dumps(self.server.collector.snapshot(), ensure_ascii=True).encode('utf-8')
             self.respond(200, body, 'application/json; charset=utf-8')
+        elif path == '/api/report':
+            self.task_report()
         elif path == '/api/events':
             if self.command == 'HEAD':
                 self.send_headers(200, 'text/event-stream', 0)
@@ -231,6 +235,47 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.respond(404, b'Not found.\n')
 
     do_HEAD = do_GET
+
+    def task_report(self):
+        # An index belongs to exactly one cache revision. Neither issue-only
+        # lookup nor a client-supplied checkout/path can select private metadata.
+        try:
+            query = parse_qs(urlsplit(self.path).query, strict_parsing=True, max_num_fields=2)
+            if (set(query) != {'revision', 'task'} or any(len(v) != 1 for v in query.values())
+                    or any(not re.fullmatch(r'0|[1-9][0-9]{0,15}', v[0]) for v in query.values())):
+                raise ValueError('Invalid selector')
+            revision, index = int(query['revision'][0]), int(query['task'][0])
+        except ValueError:
+            self.respond(400, b'Expected a snapshot revision and task index.\n')
+            return
+        cached = self.server.collector.snapshot()
+        tasks = (cached['projection'] or {}).get('tasks') or []
+        if revision != cached['revision'] or index >= len(tasks):
+            self.respond(409, b'Task selection changed; refresh the snapshot.\n')
+            return
+        selected = tasks[index]
+        if cached['stale']:
+            result = unavailable_report('Task report unavailable: the dashboard snapshot is unverified; recorded guidance may be stale.',
+                                        selected, cached['discovery'])
+        else:
+            if not self.server.report_reads.acquire(blocking=False):
+                self.respond(503, b'Report reads are busy; retry shortly.\n')
+                return
+            try:
+                result = self.server.report_reader(selected)
+            except Exception:
+                result = unavailable_report('Task report unavailable: saved evidence could not be read safely. Refresh to retry.', selected)
+            finally:
+                self.server.report_reads.release()
+        if self.server.collector.snapshot()['revision'] != revision:
+            self.respond(409, b'Task selection changed; refresh the snapshot.\n')
+            return
+        body = json.dumps(dict(result, revision=revision, task=index, identity=report_identity(selected)),
+                          ensure_ascii=True).encode('utf-8')
+        try:
+            self.respond(200, body, 'application/json; charset=utf-8')
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            pass  # Task switches/refreshes cancel potentially slow report reads.
 
     def events(self):
         if not self.server.streams.acquire(blocking=False):
