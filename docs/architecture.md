@@ -102,6 +102,41 @@ identity and registered Herdr membership without invoking lifecycle controllers
 or creating a history store. See the [status contract](lifecycle.md#task-status)
 for discovery, project grouping, operator guidance, and bounded evidence history.
 
+[`dashboard_server.py`](../task_start/dashboard_server.py) is a standard-library
+HTTP/JSON/SSE adapter over `task_status()` with no issue selector. One collector
+refreshes its disposable in-memory cache from persisted local state, sequentially
+with a five-second delay between projections. Snapshot requests never invoke
+Herdr. The cache retains the last complete projection during discovery failures
+(or the first partial projection before any complete one) and exposes the latest
+discovery diagnostics separately; it does not reconcile workflow records or
+persist an archive. Collection metadata is separate from the canonical model.
+SSE sends only invalidation revisions and heartbeat comments, with at most 16
+concurrent streams. Every connection invalidates, including after a server
+restart; clients recover through `GET /api/snapshot`, never event replay.
+
+The server binds only to loopback, accepts local same-origin reads, exposes fixed
+asset/API routes, and rejects writes. Local-host headers may use another port for
+an operator-owned SSH tunnel. No arbitrary file, task command, or provider API is
+reachable through HTTP. The frontend uses DOM text nodes for projected values
+and displays canonical guidance without computing recovery choices.
+
+Static assets live in repository-root [`web/`](../web/): `index.html`, `app.js`,
+and `styles.css`. Their explicit paths resolve from the installed Python module,
+never the caller's directory, and startup fails if the bundle is incomplete.
+**Distribution resource contract for DEV-16:** include this `web/` directory as
+a sibling of `task_start/` in the same installed application tree/release, or adapt
+the single `asset_root()` resolver when implementing packaging. Do not require
+a separate frontend install/build or fall back to files in the caller's checkout.
+Focused dashboard tests exercise relocated resources, the CLI from another
+directory, canonical projection adaptation, separate-process persisted updates,
+SSE/reconnect, uncertainty, removal, and read-only transport. Browser inspection
+uses the optional [worktree helper](browser.md), not a runtime/test dependency.
+Optional developer frontend checks run with
+`node --test tests/dashboard_frontend.mjs`. They use Node built-ins and a small
+DOM double for selection, disclosures, literal text, and refresh behavior;
+rendered appearance and responsive layout still need browser inspection.
+See [dashboard usage](lifecycle.md#task-dashboard).
+
 ## Handoff transport
 
 Codex is launched with `--cd` and uses its local app-server API for a readiness

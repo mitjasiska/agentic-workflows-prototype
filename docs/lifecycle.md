@@ -13,6 +13,7 @@ Command behavior, invariants, and refusal/retry cases for Agentic Workflows Lite
 - [Fresh review and exact resume](#task-review)
 - [Automatic implementation/review loop](#task-loop)
 - [Read-only task status and history](#task-status)
+- [Live local dashboard](#task-dashboard)
 - [Reviewed PR publishing](#task-pr)
 - [Isolated conflict recovery](#task-integrate)
 - [Cleanup and partial failures](#task-cleanup)
@@ -45,6 +46,9 @@ or conflicts leave membership `unverified`. This is local configured membership,
 not a claim that Linear has been refreshed. Repository basename/display-label
 guesses are never used. Status only needs the repository location from machine
 configuration, not a Linear credential or agent configuration.
+CLI source in a linked worktree uses the same verified permanent-checkout
+[registry discovery](configuration.md#installation-and-project-mapping) as other
+config consumers; it does not need a private registry copied into the worktree.
 
 JSON version 1 has `selection`, `issue`, `discovery`, `projects`,
 `unverified_project_tasks`, and `tasks`. Project groups contain indexes into the
@@ -99,6 +103,65 @@ transition that ever occurred. A replacement loop replaces its checkpoint histor
 No journal or global task-history database is introduced: task Git metadata goes
 away with its worktree; existing registry retirement and cleanup tombstone policies
 remain owned by their lifecycle components.
+
+## Task dashboard
+
+Run `task dashboard` and open its printed URL (normally
+`http://127.0.0.1:8765`). `--port PORT` selects another port, and `--port 0`
+asks the OS for a free port. The server always binds to `127.0.0.1`; it has no
+public-listen option. Ctrl+C, SIGTERM, or SIGHUP stops the dashboard without
+changing workflow state. Missing bundled assets or a busy port produce a startup
+error. No additional runtime or frontend build is required.
+
+The navigation is **configured Linear project → registered task execution →
+agent contexts and bounded history**. Repository names are secondary labels.
+Overview counts, state badges, current phase, saved pass/review counts, and the
+canonical attention hint are prominent. Context identities, workspace paths,
+detailed evidence, and bounded history expand on demand; open sections and
+keyboard focus are retained when the same task refreshes. Context cards show
+saved context states separately from canonical task state, without inferring
+agent liveness from an `active` context flag.
+Unverified project membership appears separately, without guessing a mapping.
+The browser displays the [canonical status projection](#task-status), including
+its exact conservative guidance and conditional command text. Those commands
+are informational; there are no workflow action controls. CLEAN and locally
+recorded merged executions remain visible while registered. Confirmed retirement
+removes them, including a selected task's detail. There is no task archive or
+remote Linear/GitHub refresh.
+
+One shared collector reads persisted state at startup and waits five seconds
+after each completed projection before the next check. All browser clients read
+its cache. SSE notifications trigger full HTTP snapshot reads; opening or
+reconnecting also fetches the current snapshot, without replaying old events.
+The browser additionally reads the cache every 15 seconds for freshness and as
+a fallback if the event stream is unavailable. These reads do not poll Herdr.
+
+Uncertain/unavailable discovery retains the last complete projection with a
+visible stale/unverified notice and the latest discovery diagnostics. Before
+the first complete discovery, any retained partial projection is also labeled
+unverified. Omissions during uncertainty never establish cleanup. A task whose
+evidence cannot be decoded retains the canonical uncertainty when it is included
+in the projection. A genuinely empty, successful discovery clears the old view.
+Last-check, projection-change, and last-complete-discovery times describe
+dashboard observations, not agent progress or liveness. Slow reads and server
+disconnects are visible; an unchanged timestamp is not proof of a stuck agent.
+History keeps the canonical source ordering and unknown timestamps.
+
+To view a dashboard running on another machine, create your own SSH tunnel:
+
+```sh
+# On the workflow machine:
+task dashboard --port 8765
+# On the machine running your browser:
+ssh -N -L 8765:127.0.0.1:8765 user@workflow-host
+```
+
+Open `http://127.0.0.1:8765` on the browser machine. The first port in `-L` may
+be changed if it is busy locally. You can use the workflow machine's private
+Tailscale address/name as the SSH destination with your own SSH/Tailscale setup.
+Lite still listens only on that machine's loopback address; tunneling and private
+network access are operator-owned, with no remote hosting, accounts, or network
+configuration added by Lite.
 
 ## Task start
 

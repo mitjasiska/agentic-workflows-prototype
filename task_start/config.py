@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
 import tomllib
 from typing import Mapping
 
@@ -308,7 +309,76 @@ def codex_repository_profiles(data: dict | None) -> dict[str, str]:
     return profiles
 
 
-def load_projects(path: Path = REGISTRY) -> list[Project]:
+def default_project_registry() -> Path:
+    """Use the CLI installation's permanent checkout, never the caller's cwd.
+
+    Git proves the relationship when this code lives in a linked worktree.
+    A non-Git installation retains the sibling config/ resource convention.
+    No parent search, machine paths, or worktree-local fallback is permitted.
+    """
+    try:
+        return _default_project_registry()
+    except (OSError, RuntimeError):
+        raise TaskError('Cannot resolve private project registry checkout identity safely') from None
+
+
+def _default_project_registry() -> Path:
+    source = REGISTRY.parent.parent
+    if not os.path.lexists(source / '.git'):
+        return REGISTRY
+
+    # Inherited Git selectors/config injection must not redirect discovery to
+    # the repository of the shell that happened to launch this CLI.
+    env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+
+    def git(root, *args):
+        try:
+            result = subprocess.run(['git', '-C', str(root), *args], env=env,
+                                    capture_output=True, timeout=10, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            raise TaskError('Cannot verify the CLI checkout for private project registry discovery') from None
+        if result.returncode:
+            raise TaskError('Cannot verify the CLI checkout for private project registry discovery')
+        return os.fsdecode(result.stdout)
+
+    def identity(root):
+        values = git(root, 'rev-parse', '--path-format=absolute', '--show-toplevel',
+                     '--absolute-git-dir', '--git-common-dir').splitlines()
+        if len(values) != 3 or any(not Path(value).is_absolute() for value in values):
+            raise TaskError('Ambiguous CLI checkout identity for project registry discovery')
+        top, private, common = map(Path, values)
+        if top != root or any(path.resolve() != path for path in (top, private, common)):
+            raise TaskError('Conflicting CLI checkout identity for project registry discovery')
+        return private, common
+
+    private, common = identity(source)
+    records = []
+    for record in git(source, 'worktree', 'list', '--porcelain', '-z').split('\0\0'):
+        fields = dict(field.partition(' ')[::2] for field in record.split('\0') if field)
+        if fields:
+            records.append(fields)
+    # Git lists its main worktree first. Verify that candidate independently;
+    # neither its display name nor common-dir.parent establishes authority.
+    if (not records or not records[0].get('worktree')
+            or sum(row.get('worktree') == str(source) for row in records) != 1
+            or any('bare' in row or 'prunable' in row for row in records
+                   if row.get('worktree') in {str(source), records[0]['worktree']})):
+        raise TaskError('Missing or ambiguous CLI worktree registration for project registry discovery')
+    permanent = Path(records[0]['worktree'])
+    if (not permanent.is_absolute() or identity(permanent) != (common, common)
+            or private == common and permanent != source
+            or private != common and private.parent != common / 'worktrees'):
+        raise TaskError('Private project registry requires a verified permanent CLI checkout')
+    if source != permanent and os.path.lexists(REGISTRY):
+        raise TaskError('A linked CLI worktree has a competing private project registry; use only the permanent checkout registry')
+    path = permanent / 'config' / 'projects.toml'
+    if path.resolve() != path:
+        raise TaskError('Private project registry must not redirect outside its permanent checkout path')
+    return path
+
+
+def load_projects(path: Path | None = None) -> list[Project]:
+    path = default_project_registry() if path is None else path
     data = read_toml(path)
     if "example_only" in data:
         raise TaskError("Configure private project targets and remove example_only; examples are not runtime mappings")

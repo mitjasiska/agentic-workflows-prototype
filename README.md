@@ -47,6 +47,8 @@ Agent execution also needs an authenticated Codex or Pi CLI on `PATH`.
    `linear_project` must match the Linear project name; `repo_name` and
    `base_branch` identify its local checkout and base. The base must track a
    same-named remote branch. Missing or ambiguous mappings stop the workflow.
+   Keep the private registry in the permanent CLI checkout; linked CLI worktrees
+   resolve that shared registry through Git. See [registry discovery](docs/configuration.md#installation-and-project-mapping).
 3. Copy [`config/local.example.toml`](config/local.example.toml) to
    `~/.agentic-workflows-lite/config.toml`, creating the directory first. Set
    `projects_root`, your Linear personal API key, and your `[agent]` selection.
@@ -300,6 +302,20 @@ configured Linear project; CLEAN and published tasks stay visible until workspac
 cleanup. Unavailable discovery and ambiguous project mappings are reported explicitly.
 Issue lookup also shows bounded saved history for diagnostic inspection. See the
 [status contract](docs/lifecycle.md#task-status) for JSON, evidence limits, and operator hints.
+
+To keep that view open with automatic updates:
+
+```sh
+task dashboard
+task dashboard --port 8766
+```
+
+Open the printed localhost URL, choose a configured Linear project, then inspect
+a task's current phase, progress, and attention guidance. Expand contexts,
+workspace details, and history when needed. The dashboard is read-only,
+requires no frontend build or Node runtime, and stops with Ctrl+C. Use `--port 0`
+to select a free port. See [local dashboard and SSH access](docs/lifecycle.md#task-dashboard)
+for stale-data behavior and access from another machine.
 
 ### Find your conversations
 

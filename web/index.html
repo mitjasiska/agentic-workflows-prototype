@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Lite · Local task dashboard</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#task-detail">Skip to task detail</a>
+  <header class="masthead">
+    <div><p class="eyebrow">Agentic Workflows Lite</p><h1>Local task dashboard</h1><p class="subtitle">Your projects, current work, and next steps.</p></div>
+    <div class="connection"><span class="readonly">Read only</span><p id="connection" role="status">Connecting…</p></div>
+  </header>
+  <div id="notices" aria-live="polite"></div>
+  <section class="overview" aria-label="Current task overview" id="overview"></section>
+  <main class="layout">
+    <nav class="projects panel" aria-label="Configured Linear projects">
+      <p class="eyebrow">1 · Choose a project</p><h2>Projects</h2><div id="projects"></div>
+    </nav>
+    <section class="tasks panel" aria-labelledby="tasks-title">
+      <p class="eyebrow">2 · Choose a task</p><h2 id="tasks-title">Tasks</h2><p class="muted" id="task-count">Herdr-registered executions</p><div id="tasks"></div>
+    </section>
+    <section id="task-detail" class="detail panel" tabindex="-1" aria-label="Task detail">
+      <p class="eyebrow">3 · State, contexts &amp; history</p><h2>Waiting for task state</h2><p class="muted">The first snapshot is being collected.</p>
+    </section>
+  </main>
+  <footer>
+    <p id="freshness">Waiting for the first local observation…</p>
+    <details class="observation-details"><summary>Observation details</summary><p id="observation-times"></p><p>Times describe local observations, not proof of agent activity. Completed executions stay visible until their Herdr workspace is removed. No workflow actions are available here.</p></details>
+  </footer>
+  <noscript>This dashboard needs JavaScript to display the local status snapshot and live updates.</noscript>
+</body>
+</html>
