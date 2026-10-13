@@ -74,6 +74,9 @@ Configure `[reviewer]` separately before using review; fresh reviews require an
 explicit model and mode in that section or as command flags. The
 [configuration guide](docs/configuration.md) includes examples, option precedence,
 agent compatibility, and optional repository-specific Codex permission profiles.
+For web tasks, optional [on-demand browser setup](docs/browser.md) installs one
+user-level helper for Pi and Codex across worktrees, with lazy browser startup
+and isolated worktree sessions.
 Optional shared and personal
 [project defaults](docs/configuration.md#project-defaults) apply per field from the
 trusted permanent checkout. The old global namespace has no fallback; see the

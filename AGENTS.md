@@ -56,6 +56,14 @@
   for plugin changes. Its bundled skill is generated from the canonical
   `skills/create-linear-task/` directory; edit the source and synchronize it.
 
+## Web tasks
+
+- For web tasks, follow the canonical [browser guide](docs/browser.md). After
+  one-time user setup, invoke `ab-worktree pi` or `ab-worktree codex` from the
+  target checkout. Start the browser only when needed; prefer snapshots,
+  semantic/DOM queries, console and network diagnostics. Screenshots are opt-in
+  for visual/layout checks. Use explicit `--instance ID` for same-worktree isolation.
+
 ## Validation and handoff
 
 - Run focused checks appropriate to the change during implementation and default
