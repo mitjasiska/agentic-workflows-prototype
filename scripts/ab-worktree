@@ -7,11 +7,15 @@ export LC_ALL
 fail() { printf 'ab-worktree: %s\n' "$*" >&2; exit 2; }
 usage() {
     cat <<'EOF'
-Usage: ab-worktree {pi|codex} [--instance ID] [--] COMMAND [ARGS...]
+Usage: ab-worktree AGENT [--instance ID] [--actor ID] [--connect-only] COMMAND [ARGS...]
+       ab-worktree AGENT --instance ID --actor ID --prepare
        ab-pi [--instance ID] [--] COMMAND [ARGS...]
        ab-codex [--instance ID] [--] COMMAND [ARGS...]
 ID: 1-64 ASCII letters, digits, dots, underscores or hyphens; start with a letter/digit.
-Remaining arguments go to agent-browser with an explicit worktree session.
+AGENT: lowercase name (codex, pi, or a custom shell agent), at most 24 characters.
+--prepare: host-only startup/reuse; --connect-only: requires a prepared live browser.
+AWL_BROWSER_* assignments in an AWL handoff must be preserved on every call.
+Legacy single-actor commands without these modes remain lazy.
 EOF
 }
 case "${1-}" in --help|-h) usage; exit 0 ;; esac
@@ -19,21 +23,50 @@ case "${0##*/}" in
     ab-pi) agent=pi ;;
     ab-codex) agent=codex ;;
     *)
-        case "${1-}" in pi|codex) agent=$1; shift ;; *) fail 'expected agent type pi or codex (see --help)' ;; esac
+        agent=${1-}
+        case "$agent" in ''|[!a-z]*|*[!a-z0-9_-]*) fail 'invalid agent name (see --help)' ;; esac
+        [ "${#agent}" -le 24 ] || fail 'agent name exceeds 24 characters'
+        shift
         ;;
 esac
-instance=
-if [ "${1-}" = --instance ]; then
-    [ "$#" -ge 2 ] || fail '--instance requires an ID'
-    instance=$2
-    case "$instance" in
-        ''|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) fail 'invalid instance ID (see --help)' ;;
+instance=${AWL_BROWSER_INSTANCE-}
+actor=${AWL_BROWSER_ACTOR-}
+mode=legacy
+seen_instance=
+seen_actor=
+[ "${AWL_BROWSER_CONNECT_ONLY-}" != 1 ] || mode=connect
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --instance|--actor)
+            option=$1
+            [ "$#" -ge 2 ] || fail "$option requires an ID"
+            case "$2" in ''|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) fail 'invalid instance ID or actor ID (see --help)' ;; esac
+            [ "${#2}" -le 64 ] || fail 'instance ID or actor ID exceeds 64 characters'
+            if [ "$option" = --instance ]; then
+                [ -z "$seen_instance" ] || fail 'ambiguous repeated --instance'
+                instance=$2; seen_instance=1
+            else
+                [ -z "$seen_actor" ] || fail 'ambiguous repeated --actor'
+                actor=$2; seen_actor=1
+            fi
+            shift 2 ;;
+        --connect-only) [ "$mode" != prepare ] || fail 'conflicting modes'; mode=connect; shift ;;
+        --prepare) [ "$mode" != connect ] || fail 'host preparation forbidden in connect-only mode'; mode=prepare; shift ;;
+        *) break ;;
     esac
-    [ "${#instance}" -le 64 ] || fail 'instance ID exceeds 64 characters'
-    shift 2
+done
+# The parent must supply unique identities when actors can run concurrently.
+if [ "${AWL_BROWSER_CONCURRENT-}" = 1 ] && { [ -z "$instance" ] || [ -z "$actor" ]; }; then
+    fail 'concurrent browser actors require distinct stable --instance and --actor IDs from their parent'
 fi
+for identity in "$instance" "$actor"; do
+    case "$identity" in '') ;; [!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) fail 'invalid instance ID or actor ID' ;; esac
+    [ "${#identity}" -le 64 ] || fail 'instance ID or actor ID exceeds 64 characters'
+done
+# Assigned actors always use managed transport, even if the option was omitted.
+if { [ -n "$actor" ] || [ -n "${AWL_BROWSER_INSTANCE-}" ]; } && [ "$mode" = legacy ]; then mode=connect; fi
 if [ "${1-}" = -- ]; then shift; fi
-[ "$#" -gt 0 ] || fail 'expected an agent-browser command (see --help)'
+[ "$mode" = prepare ] || [ "$#" -gt 0 ] || fail 'expected an agent-browser command (see --help)'
 # agent-browser parses global options even after the command. Never let forwarded
 # options override the identity selected here, even after --.
 for argument do
@@ -42,7 +75,7 @@ for argument do
         --instance|--instance=*) fail '--instance must precede the browser command' ;;
     esac
 done
-for tool in git sha256sum agent-browser; do
+for tool in git sha256sum; do
     command -v "$tool" >/dev/null 2>&1 || fail "required executable missing from PATH: $tool"
 done
 # Inherited Git selectors must not redirect identity to another checkout.
@@ -65,6 +98,14 @@ digest=${digest%% *}
 case "$digest" in ''|*[!0-9a-f]*) fail 'invalid identity digest' ;; esac
 [ "${#digest}" -eq 64 ] || fail 'invalid identity digest length'
 session="awl-$agent-$(printf '%.32s' "$digest")"
+if [ "$mode" != legacy ]; then
+    for tool in python3 readlink; do
+        command -v "$tool" >/dev/null 2>&1 || fail "required executable missing from PATH: $tool"
+    done
+    helper=$(readlink -f -- "$0") || fail 'cannot resolve helper installation'
+    exec python3 "${helper%/*}/ab_worktree_session.py" "$root" "$agent" "$instance" "$actor" "$session" "$mode" "$@"
+fi
+command -v agent-browser >/dev/null 2>&1 || fail 'required executable missing from PATH: agent-browser'
 agent-browser --session "$session" "$@" && exit 0
 status=$?
 printf 'ab-worktree: agent-browser failed for session %s (exit %s)\n' "$session" "$status" >&2

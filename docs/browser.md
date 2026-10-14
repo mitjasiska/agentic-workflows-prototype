@@ -1,9 +1,10 @@
 # On-demand worktree browser
 
-Use the Linux-first browser helper for web tasks from any Git worktree, including
-Herdr worktrees. It reuses installed `agent-browser` and Chrome. Setup and agent
-startup launch no browser, daemon, or session resolver. The first browser command
-starts Chrome when needed; later calls reuse that identity's session.
+AWL's optional Linux browser integration uses one `ab-worktree` interface for
+Codex, Pi, and custom shell-capable agents. Browser access is an explicit task
+capability. A repository name or task description never enables it automatically.
+Tasks without opt-in start no Chrome process and need no Node installation or
+browser daemon.
 
 ## One-time user setup
 
@@ -13,173 +14,268 @@ From a stable AWL checkout, run:
 python3.12 scripts/install_browser.py
 ```
 
-The installer copies the POSIX shell helper to `~/.local/bin/ab-worktree`, copies
-this canonical guide to `~/.local/share/awl-browser/browser.md`, and creates
-`ab-pi` and `ab-codex` symlinks only if those names are free. It appends a small
-guide/command pointer to the global instruction file each harness actually reads.
-Existing instruction bytes and personal shortcuts (including an existing
-`~/.local/bin/ab-codex`) are preserved. Use `ab-worktree codex` when a personal
-shortcut already exists; that shortcut's behavior remains operator-owned.
-
-Ensure `~/.local/bin` and the installed `agent-browser` directory are on the PATH
-used by agent shells. If needed, add this line to your shell startup file once,
-then restart the terminal/Herdr session and Pi/Codex:
+The guided setup detects Git, Python, `sha256sum`, `readlink`, `agent-browser`,
+and Chrome. At an interactive terminal it asks before downloading missing optional
+dependencies. For explicit unattended consent to those downloads, use:
 
 ```sh
-export PATH="$HOME/.local/bin:$PATH"
-command -v ab-worktree agent-browser
+python3.12 scripts/install_browser.py --install-deps
 ```
 
-The global pointers also give an absolute helper path for shells without
-`~/.local/bin` on PATH. `agent-browser`, Git, and `sha256sum` must still be on PATH;
-missing tools fail explicitly. With an npm/nvm installation, ensure its active
-Node bin directory is available to both harnesses, including Codex shell commands.
-No browser/session environment variable needs to be exported.
+Missing `agent-browser` is installed with npm into a private user prefix under
+`~/.local/share/awl-browser-npm`, with a shortcut in `~/.local/bin`. This requires
+Node.js 24+ and npm; absent prerequisites produce a concrete diagnostic. Chrome
+is downloaded using `agent-browser install`, without system package installation.
+Existing supported installations are reused. Setup itself launches no browser.
 
-Instruction discovery:
+Managed preparation/connect-only transport supports **agent-browser 0.39.0**.
+An incompatible existing installation is preserved and reported for explicit
+operator upgrade/downgrade. The version pin bounds the local socket protocol and
+upstream launch behavior used by this integration. See the upstream
+[installation guide](https://agent-browser.dev/installation) and
+[versioned source](https://github.com/vercel-labs/agent-browser/tree/v0.39.0/cli/src).
+Legacy lazy calls continue to use the installed CLI's own command surface.
 
-- Codex reads the first non-empty `AGENTS.override.md` or `AGENTS.md` in
-  `${CODEX_HOME:-~/.codex}`. The installer appends to that selected file, creating
-  `AGENTS.md` if neither has content. See [official Codex instructions](https://developers.openai.com/codex/guides/agents-md).
-- Pi 0.87.1 reads the first existing regular file among `AGENTS.override.md`,
-  `AGENTS.md`, `AGENTS.MD`, `CLAUDE.md`, and `CLAUDE.MD` in
-  `${PI_CODING_AGENT_DIR:-~/.pi/agent}`, even if empty. The installer appends to
-  that file rather than creating a higher-priority file that shadows personal
-  instructions. See [Pi's resource loader](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/resource-loader.ts).
+Setup installs `ab-worktree` and its Python companion `ab_worktree_session.py`
+in `~/.local/bin`, and this guide in `~/.local/share/awl-browser/browser.md`.
+It creates `ab-pi` and `ab-codex` only when those names are free. Custom wrappers,
+browser configurations, shell startup files, and personal instruction text are
+preserved. An install manifest permits updates only when installed managed files
+still match their recorded hashes. Unmodified DEV-94 helper/guide copies are also
+recognized for upgrade. Edited files, malformed managed instruction pointers,
+symlinks/hard links at file destinations, and conflicting destinations fail safely
+for manual reconciliation. Repeat setup leaves identical files untouched.
 
-The installer honors those home overrides at setup time. Its `--codex-home`,
-`--pi-home`, `--bin-dir`, and `--data-dir` options allow explicit destinations;
-run `python3.12 scripts/install_browser.py --help`. Use the same homes when
-starting agents. Rerun setup if you later add/remove a higher-priority instruction
-file or change agent homes. Pi's `--no-context-files` disables discovery; large
-Codex instruction files may hit its instruction size limit.
+Setup appends a short pointer to each native agent's selected instruction file:
 
-Repeat setup leaves identical files and pointers untouched. Before writing, setup
-checks all managed-file and instruction conflicts. Different existing helper or
-guide contents, edited/malformed managed pointers, symlinked/hard-linked files,
-and unsafe destinations stop with an explanation. For upgrades, review and move
-only the two installed helper/guide files aside if their contents changed, then
-rerun setup; reconcile an edited pointer manually. Setup never rewrites personal
-instructions or shell startup files and never installs Chrome or AppArmor rules.
-The installed copies survive removal of the source checkout. This installed guide
-is a snapshot; the source of truth remains `docs/browser.md` in AWL.
+- Codex: first nonempty `AGENTS.override.md` or `AGENTS.md` in
+  `${CODEX_HOME:-~/.codex}`; otherwise creates `AGENTS.md`.
+- Pi: first existing regular file among `AGENTS.override.md`, `AGENTS.md`,
+  `AGENTS.MD`, `CLAUDE.md`, and `CLAUDE.MD` in
+  `${PI_CODING_AGENT_DIR:-~/.pi/agent}`, including an empty file.
 
-## Invocation and identity
+These discovery rules preserve existing instruction precedence. Explicit
+`--codex-home`, `--pi-home`, `--bin-dir`, and `--data-dir` override destinations.
+`--skip-instructions` installs only the generic commands and guide, useful for
+custom agents. Rerun setup when instruction precedence or agent homes change.
+Pi's `--no-context-files` disables discovery; Codex's instruction size limit can
+truncate large files. The installed guide is a snapshot of this canonical guide.
+
+Ensure the controller and agent shells can find `~/.local/bin`. An absolute
+helper path works too; the handoff supplies one. Restart existing terminal/Herdr
+and agent processes after changing PATH. To check installation without writes:
 
 ```sh
-ab-worktree pi open http://localhost:3000
-ab-worktree codex snapshot -i
-ab-pi snapshot -i
-ab-codex snapshot -i                  # If installed by this setup
-ab-worktree codex --instance reviewer-1 open http://localhost:3000
-ab-worktree codex --instance reviewer-1 close
+python3.12 scripts/install_browser.py --check
+# Supply the PATH actually obtained from the target agent shell:
+python3.12 scripts/install_browser.py --check --agent-path '/path/to/agent/bin:/usr/bin:/bin'
 ```
 
-Run from the target checkout or a subdirectory. Each call resolves the physical
-Git worktree root and derives `awl-<agent>-<digest>` from the root, agent type,
-and optional instance ID using NUL-separated fields and the first 128 bits of
-SHA-256. Subdirectories and symlink aliases reuse the same identity; different
-worktrees, Pi/Codex, and different instance IDs get different identities. Moving
-a checkout changes its identity. This deliberately uses its own bounded session
-derivation, independent of `agent-browser session id` versions/fallback behavior.
+`--agent-path` checks executable visibility, not sandbox socket access. Connect-only
+agents need the helper, its companion, Python 3, Git, `sha256sum`, and `readlink`;
+only the host needs `agent-browser` and Chrome. Setup never installs system
+libraries, uses `sudo`, changes AppArmor, or edits third-party agent settings.
 
-`--instance ID` must precede the browser command. IDs are 1–64 ASCII letters,
-digits, dots, underscores, or hyphens, starting with a letter or digit. Omission
-means one session per agent type per worktree. Reuse the same ID for every call,
-including `close`. AWL does not yet inject unique browser-instance IDs into agent
-or subagent launchers. Concurrent same-agent/same-worktree callers share a session
-unless explicitly given distinct IDs; this helper does not schedule subagents.
+## AWL task opt-in and identity handoff
 
-Arguments are forwarded intact with an explicit `--session`; inherited
-`AGENT_BROWSER_SESSION` is unnecessary and cannot select the session. A forwarded
-`--session` override is rejected. The optional `--` after the helper options ends
-helper parsing, as in `ab-worktree pi -- snapshot -i`. Browser command failures
-retain their exit code and print a session-specific error; missing tools, invalid
-IDs, and non-worktree/bare-repository contexts fail before any browser call.
-There is no shared-default fallback or per-worktree configuration. Browser session
-data stays in agent-browser's user storage; do not add it to a repository.
-
-## Lightweight development loop
-
-Start your application's development server using its normal project commands.
-Use your harness's helper for each call (`ab-worktree codex` below; substitute
-`pi` for Pi). Prefer accessibility snapshots and semantic/DOM queries:
+Run the controller on the host, outside the coding agent's sandbox:
 
 ```sh
-ab-worktree codex open http://localhost:3000
-ab-worktree codex snapshot -i
-ab-worktree codex find role button click --name Submit
-ab-worktree codex get text 'main'
-ab-worktree codex eval 'document.querySelector("main").textContent'
-ab-worktree codex console
-ab-worktree codex errors
-ab-worktree codex network requests
+awl start DEV-7 --browser
+awl loop DEV-7 --browser
+awl review DEV-7 --browser
+awl review DEV-7 --resume DEV-7-R1
 ```
 
-Inspect the updated snapshot after interactions; element references can change.
-Check console errors and failed network requests while iterating. Request a
-screenshot only when checking appearance or layout, for example
-`ab-worktree codex screenshot /tmp/page-layout.png`; visual analysis is opt-in.
-Close the session when the web work is finished: `ab-worktree codex close`.
-For installed-version command details, use `agent-browser --help`.
+These are alternative lifecycle entry points, not a sequence to run together.
+`--browser` conflicts with `start --no-agent`. Loop controls preserve the saved
+capability; omit the flag for `--continue`, `--retry-review`, `--extend`, etc.
+An existing loop without browser opt-in cannot acquire it through recovery;
+starting a new loop requires the existing lifecycle's explicit authorization.
+Browser opt-in is per task execution, never a project-wide configuration default.
+Project agent/model/profile defaults still use the [existing configuration](configuration.md).
 
-## Ubuntu installation and sandbox troubleshooting
+Before each browser-dependent handoff, AWL uses the allocated context ID as both
+actor ID and instance ID: for example `DEV-7-I1`, `DEV-7-R1`, and `DEV-7-R2`.
+The controller prepares or reuses that exact session on the host and verifies a
+snapshot. It then supplies the absolute helper path, exact identity, private
+runtime directory, and a complete `env ... --connect-only` command prefix in the
+handoff. Use that prefix on **every** call. Fresh and resumed reviewer handoffs
+use the same persisted reviewer ID, including after pane recreation. A default
+session or a session called `dev7-review` cannot stand in for `DEV-7-R2`.
 
-If the tools are already installed, reuse them. Otherwise the operator installs
-them once (system dependency installation can require administrator privileges):
+Opt-in is retained on each actor and in the loop checkpoint. Each actor's runtime
+directory is also retained, so changed controller environment variables cannot
+create a second session during resume. Browser
+preflight errors stop delivery before dependent agent work; the agent must not
+try to compensate by starting Chrome in its sandbox. An agent-side `snapshot -i`
+must succeed before reporting browser access/acceptance passed. A successful host
+snapshot alone is not that evidence.
+
+## Generic host and agent contract
+
+Custom shell-capable agents need no plugin. From the **target checkout**, a host
+controller or parent integration prepares each actor independently:
 
 ```sh
-npm install -g agent-browser
-agent-browser install --with-deps
+ab-worktree custom --instance task7-main --actor task7-main --prepare
+ab-worktree custom --instance task7-sub1 --actor task7-sub1 --prepare
+ab-worktree custom --instance task7-sub2 --actor task7-sub2 --prepare
 ```
 
-See [agent-browser installation](https://agent-browser.dev/installation). To check
-headless Chrome from a Git worktree after setup:
+Then give each actor only its own assignment. For example, this actor's calls are:
+
+```sh
+AWL_BROWSER_INSTANCE=task7-sub1 AWL_BROWSER_ACTOR=task7-sub1 \
+AWL_BROWSER_CONNECT_ONLY=1 AWL_BROWSER_CONCURRENT=1 \
+ab-worktree custom --instance task7-sub1 --actor task7-sub1 --connect-only snapshot -i
+```
+
+For a different runtime directory, propagate the exact absolute
+`AWL_BROWSER_RUNTIME_DIR` printed by preparation. AWL also supplies
+`AWL_BROWSER_AGENT` and `AWL_BROWSER_ROOT` to reject an agent/worktree mismatch.
+`AWL_BROWSER_INSTANCE` and `AWL_BROWSER_ACTOR` reject conflicting explicit IDs;
+assignments imply connect-only use even if the option is omitted. An environment
+marked `AWL_BROWSER_CONNECT_ONLY=1` cannot call `--prepare`.
+
+Each simultaneous actor needs a **distinct stable instance and actor ID**, even
+when it has the same agent type and worktree as its parent. Tabs in one browser
+are not actor isolation. A parent must assign and retain each child's IDs and
+arrange host preparation before giving it browser work. Set
+`AWL_BROWSER_CONCURRENT=1` when concurrency is known: missing instance/actor IDs
+then fail. Reusing an instance with a different actor, or assigning a second instance to
+the same actor in that runtime directory, is refused, even after close. Repeated preparation with the same actor/instance means reuse, not a new
+actor; a framework must never assign both IDs to two different actors.
+
+AWL allocates IDs for actors it launches through its context registry. It does
+not discover or schedule third-party internal subagents. A framework unable to
+supply distinct stable IDs and host preparation must report that limitation and
+block those subagents' browser use. Do not inherit the parent's assignment.
+
+Agent names are 1–24 lowercase ASCII letters/digits/underscores/hyphens, starting
+with a letter. Instance/actor IDs are 1–64 ASCII letters/digits/dots/underscores/
+hyphens, starting with a letter or digit. Options precede the browser command.
+Physical Git worktree root, agent, and instance are NUL-separated and hashed with
+SHA-256; the first 128 bits produce `awl-<agent>-<digest>`. Subdirectories and
+symlink aliases reuse identity. Different worktrees, agents, or instances do not.
+Moving a checkout changes its browser identity.
+
+## Connect-only development loop
+
+Append commands to the **exact prefix from your handoff**. For example:
+
+```text
+open http://localhost:3000
+snapshot -i
+find role button click --name Submit
+get text main
+eval document.title
+console
+errors
+network requests
+close
+```
+
+Start the app server with its normal project command. Prefer snapshots, semantic
+and DOM queries, console errors, and network diagnostics. Refresh snapshots after
+interactions. Screenshots are opt-in for visual/layout checks.
+
+Connect-only supports: `open`/`goto`, `back`, `forward`, `reload`, `snapshot`
+(`-i`, `-c`, `-C`, `--urls`, `-d DEPTH`, `-s SELECTOR`), `eval` (including
+`--stdin`), `click`, `dblclick`, `hover`, `focus`, `check`, `uncheck`, `fill`, `type`,
+`press`, `get` (`url`, `title`, `text`, `html`, `value`, `count`, `box`, `attr`),
+`find` (`role`, `text`, `label`, `placeholder`, `testid`, with `--name`/`--exact`),
+`console`/`errors` (`--clear`), `network requests` (`--clear`), `cookies`
+(get/clear/set NAME VALUE with optional `--url`), `storage local|session`
+(get/set/clear), `tab` (list/new/TAB_ID/close), `screenshot PATH [--full]`, and `close`.
+Use the stable `tabId` returned by `tab list`: for example `tab t1` switches to
+that tab, and `tab close t2` closes that specific tab. `tab close` closes the
+active tab. IDs start at `t1` and remain stable when other tabs close; positional
+integers such as `tab 1` are not supported by the pinned protocol.
+Non-snapshot results are JSON data. Unsupported commands/options fail; the helper
+never falls back to the launching CLI. Use the bounded command surface or report
+the limitation, rather than calling raw `agent-browser` from the sandbox.
+
+For legacy **single-actor, non-concurrent** host use, existing invocations remain:
 
 ```sh
 ab-worktree codex open about:blank
-ab-worktree codex snapshot
+ab-worktree pi snapshot -i
+ab-worktree codex --instance personal-check snapshot -i
 ab-worktree codex close
 ```
 
-If Chrome reports `No usable sandbox` or a user-namespace permission error on
-Ubuntu, inspect kernel/AppArmor diagnostics for `userns_create` denial. Determine
-the **actual installed Chrome executable path** from the launch error or the
-browser installation, and resolve symlinks with `readlink -f /actual/path/to/chrome`.
-Do not assume the downloaded Chrome lives at `/opt/google/chrome/chrome`.
+Without an assignment/managed mode these calls retain lazy startup and forward
+arguments to `agent-browser`. `--session` overrides are always refused. Omitted
+instance means one session per agent type/worktree. This compatibility path is
+not the sandboxed or concurrent actor contract.
 
-An administrator can review an application-specific profile under
-`/etc/apparmor.d/awl-agent-browser-chrome`, following
-[Ubuntu's user-namespace exception guidance](https://documentation.ubuntu.com/release-notes/24.04/#unprivileged-user-namespace-restrictions).
-Replace the quoted path below with that exact physical executable path:
+## Lifecycle, permissions, and recovery
 
-```text
-abi <abi/4.0>,
-include <tunables/global>
-profile awl-agent-browser-chrome "/absolute/installed/chrome/path" flags=(unconfined) {
-  userns,
-}
-```
+Prepared sessions use private local Unix sockets under
+`${XDG_RUNTIME_DIR:-/run/user/UID}/agent-browser/awl`, or an explicitly supplied
+`AWL_BROWSER_RUNTIME_DIR`. This directory must be physical, owned by the user,
+and mode 700. Records and locks are private and live outside Git. The socket path
+must fit Linux's 108-byte bound. A per-instance lock prevents duplicate startup.
+The client verifies socket ownership, inode, daemon PID/start time, and the exact
+recorded worktree/agent/instance/actor before sending commands. It never spawns a
+CLI or daemon in connect-only mode, including after socket loss. Before browser
+actions it sends the pinned protocol's non-launching `stream_status` probe, which
+checks the Chrome connection without enabling streaming. A surviving daemon with
+a lost browser is insufficient: unavailable Chrome blocks the action and requires
+host recovery. If Chrome disappears between the probe and the action and the
+daemon reports an automatic launch/restart, the helper rejects the response before
+printing any snapshot or command result. Do not treat that interaction as passed;
+rerun host preparation. Closing an owned daemon remains possible after browser loss.
 
-The administrator loads/reloads that single profile using `apparmor_parser -r`
-on its file, then repeats launch/snapshot/close. This narrowly allows user
-namespaces for the selected executable while keeping Chrome's sandbox enabled.
-Downloaded Chrome upgrades often change the versioned path: recheck and update
-the profile attachment after upgrades. Never disable Chrome's sandbox or global
-AppArmor restrictions. The helper does not apply privileged changes or bypass
-harness/network sandbox policies; resolve an actual harness denial through the
-operator's normal permission configuration.
+Host startup uses an empty managed browser config and fresh isolated browser
+state, preserving existing user configuration. Browser environment overrides
+are ignored except `AGENT_BROWSER_EXECUTABLE_PATH`; user profiles, restore names,
+remote providers, CDP attachment, and auto-connect cannot select another browser.
+Separate actor sessions isolate navigation, tabs, cookies and storage. Closing
+one actor affects only its recorded daemon. No automatic cleanup closes unrelated
+or user-owned browsers. Existing unowned/stale sockets are refused, not adopted.
+After a normal close, host preparation can restart that same recorded actor.
+If a new actor requests an instance already owned by another actor, preparation
+refuses without reserving the new actor against that instance. Retry the new
+actor with a distinct stable instance ID; successful assignments remain fixed.
+
+Missing tools, failed startup, inaccessible sockets, or identity mismatches print
+the exact actor and a host recovery command. Run it in the same checkout on the
+host, then retry the workflow's safe continuation. Do not invent a replacement ID.
+For an unowned/stale socket or a failed daemon, inspect that exact session on the
+host before any manual cleanup; never use bulk session cleanup. A helper upgrade
+or agent restart may be necessary if installed commands or PATH differ.
+
+For Chrome startup failures check its actual executable path, missing shared
+libraries, and kernel/AppArmor user-namespace diagnostics. Downloaded Chrome
+versions can change the executable path. An administrator can diagnose the
+specific attachment using [Ubuntu's user-namespace guidance](https://documentation.ubuntu.com/release-notes/24.04/#unprivileged-user-namespace-restrictions).
+AWL applies no policy changes. It refuses root/container/CI environments where
+the supported upstream launcher would automatically add `--no-sandbox`.
+Never disable provider/Chrome sandboxing, widen global permissions, or expose a
+public browser/CDP endpoint to make a check pass.
+
+A sandbox must already permit connecting to the chosen private socket directory.
+Host preparation does not grant access through a denied provider filesystem or
+Unix-socket policy. Identity verification also needs the host daemon PID and
+`/proc/PID/stat` to be visible; a provider that hides them cannot use this transport. If the directory is unavailable, report the concrete denial
+and resolve it through the operator's normal permissions process. Do not alter
+third-party settings or silently choose another runtime directory/session.
 
 ## Validation
 
-Run the focused offline checks from the AWL checkout:
+Focused offline tests use disposable repositories and fake local daemons:
 
 ```sh
-python3.12 -m unittest discover -s tests -p 'test_browser.py' -v
+python3.12 -m unittest discover -s tests -p 'test_browser*.py' -v
 ```
 
-They use fake browser commands and disposable Git worktrees; they require no
-network, Chrome, or privileges. For live acceptance after setup, ask Pi and Codex
-in a worktree to open `about:blank`, take a snapshot, and close using their helper.
-Repeat in a second worktree and with distinct instance IDs. Metadata-only session
-checks do not establish Chrome launch or browser access under a harness sandbox.
+Workflow review/loop tests also cover exact fresh/resumed handoffs. These tests
+are not live browser acceptance. On a supported host, prepare three distinct
+actors in one worktree, then have the sandboxed agents open a local app, snapshot,
+set distinct cookies/local storage, navigate independently, and close one while
+the others remain usable. Repeat across worktrees and on fresh/resumed review.
+Record actual agent/Chrome versions and report unavailable Codex, Pi, custom-agent,
+or multi-instance checks explicitly. Full offline regression remains a merge-time
+gate under the [repository validation guidance](architecture.md#validation).

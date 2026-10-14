@@ -33,6 +33,34 @@ class RegistryTests(unittest.TestCase):
     def allocate(self, issue="DEV-20", role="implementation", **kwargs):
         return self.registry.allocate(issue, role, agent="codex", **kwargs)
 
+    def test_browser_capability_survives_restart_without_changing_frozen_context_rows(self):
+        first = self.allocate()
+        second = self.allocate(role="review")
+        frozen = self.registry.get(first)
+        self.assertFalse(self.registry.browser_enabled(first))
+        self.registry.enable_browser(first, "/tmp/browser-runtime")
+        self.registry.enable_browser(first, "/tmp/browser-runtime")
+        restored = ContextRegistry(self.path)
+        self.assertTrue(restored.browser_enabled(first))
+        self.assertEqual(restored.browser_runtime(first), "/tmp/browser-runtime")
+        with self.assertRaisesRegex(TaskError, "runtime directory changed"):
+            restored.enable_browser(first, "/tmp/different-runtime")
+        self.assertFalse(restored.browser_enabled(second))
+        self.assertEqual(restored.get(first), frozen)
+
+    def test_v3_browser_migration_keeps_context_and_defaults_disabled(self):
+        first = self.allocate()
+        frozen = self.registry.get(first)
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TABLE browser_contexts")
+            db.execute("PRAGMA user_version=3")
+        self.assertFalse(self.registry.browser_enabled(first))
+        self.registry.enable_browser(first, "/tmp/browser-runtime")
+        self.assertTrue(self.registry.browser_enabled(first))
+        self.assertEqual(self.registry.get(first), frozen)
+        with sqlite3.connect(self.path) as db:
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 4)
+
     def test_roles_issues_and_restart_have_independent_monotonic_ordinals(self):
         self.assertEqual(self.allocate(), "DEV-20-I1")
         self.assertEqual(self.allocate(role="review"), "DEV-20-R1")

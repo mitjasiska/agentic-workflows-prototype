@@ -111,6 +111,48 @@ class ReviewTests(unittest.TestCase):
             pane["label"] = args[1]
         return dict(pane=copy.deepcopy(pane))
 
+    def test_browser_fresh_and_resumed_reviewer_use_identical_prepared_id(self):
+        import browser_handoff_fixture
+        calls = browser_handoff_fixture.install(self)
+        first = review('DEV-7', browser=True)
+        self.assertEqual(first.state, 'clean', first.render())
+        self.assertEqual(calls[0][0], 'DEV-7-R1')
+        self.assertTrue(self.registry.browser_enabled(first.context_id))
+        second = review('DEV-7', browser=True)
+        self.assertEqual(second.state, 'clean', second.render())
+        resumed = review('DEV-7', resume=first.context_id)
+        self.assertEqual(resumed.state, 'clean', resumed.render())
+        self.assertEqual([c[0] for c in calls], ['DEV-7-R1', 'DEV-7-R2', 'DEV-7-R1'])
+        for prompt, (actor, _, _) in zip(self.prompts, calls):
+            self.assertIn(f'AWL_BROWSER_INSTANCE={actor}', prompt)
+            self.assertIn(f'--instance {actor} --actor {actor} --connect-only', prompt)
+            self.assertIn('DIFFERENT stable actor/instance', prompt)
+        self.assertNotIn('--instance DEV-7-R2', self.prompts[-1])
+
+    def test_browser_preflight_failure_or_mismatch_prevents_reviewer_delivery(self):
+        import browser_handoff_fixture
+        for mismatch in (False, True):
+            with self.subTest(mismatch=mismatch):
+                case = ReviewTests()
+                case.setUp()
+                try:
+                    calls = browser_handoff_fixture.install(case, fail=not mismatch, mismatch=mismatch)
+                    result = review('DEV-7', browser=True)
+                    self.assertEqual(result.state, 'failed', result.render())
+                    self.assertEqual(case.prompts, [])
+                    self.assertEqual(len(calls), 1)
+                    self.assertTrue(case.registry.browser_enabled('DEV-7-R1'))
+                finally:
+                    case.doCleanups()
+
+    def test_non_browser_review_never_prepares_or_checks_helper(self):
+        with patch('task_start.browser.which', side_effect=AssertionError('unexpected browser dependency')):
+            first = review('DEV-7')
+            resumed = review('DEV-7', resume=first.context_id)
+        self.assertEqual((first.state, resumed.state), ('clean', 'clean'))
+        self.assertFalse(self.registry.browser_enabled(first.context_id))
+        self.assertNotIn('BROWSER CAPABILITY', self.prompts[-1])
+
     def test_project_defaults_apply_to_fresh_review_but_resume_keeps_original_selection(self):
         from test_layered_config import install_lifecycle_layers
         local = install_lifecycle_layers(self)

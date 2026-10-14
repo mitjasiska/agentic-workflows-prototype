@@ -143,6 +143,41 @@ class LoopIntegrationTests(unittest.TestCase):
         self.assertEqual((self.impl_prompts, self.prompts), ([], []))
         return result
 
+    def test_browser_opt_in_prepares_each_actor_and_preserves_ids_through_fixes(self):
+        import browser_handoff_fixture
+        calls = browser_handoff_fixture.install(self)
+        self.review_results = [findings(finding()), {}]
+        result = self.run_loop(browser=True)
+        self.assertEqual(result.state, 'clean', result.render())
+        self.assertEqual([c[0] for c in calls], ['DEV-7-I1', 'DEV-7-R1', 'DEV-7-I1', 'DEV-7-R1'])
+        self.assertTrue(self.store.read()[0]['browser'])
+        for prompt in self.impl_prompts:
+            self.assertIn('--instance DEV-7-I1 --actor DEV-7-I1 --connect-only', prompt)
+        for prompt in self.prompts:
+            self.assertIn('--instance DEV-7-R1 --actor DEV-7-R1 --connect-only', prompt)
+
+    def test_browser_capability_survives_pause_and_new_controller(self):
+        import browser_handoff_fixture
+        calls = browser_handoff_fixture.install(self)
+        self.on_implementation = lambda execution, items: self.pause()
+        self.assertEqual(self.run_loop(browser=True).state, 'paused')
+        self.on_implementation = None
+        self.assertEqual(self.continue_loop().state, 'clean')
+        self.assertEqual([c[0] for c in calls], ['DEV-7-I1', 'DEV-7-R1'])
+
+    def test_browser_failed_preflight_sends_no_implementation_prompt(self):
+        import browser_handoff_fixture
+        calls = browser_handoff_fixture.install(self, fail=True)
+        result = self.run_loop(browser=True)
+        self.assertEqual(result.state, 'escalated', result.render())
+        self.assertEqual(self.impl_prompts, [])
+        self.assertEqual(self.prompts, [])
+        self.assertEqual([c[0] for c in calls], ['DEV-7-I1'])
+
+    def test_non_browser_loop_never_checks_browser_dependencies(self):
+        with patch('task_start.browser.which', side_effect=AssertionError('unexpected browser')):
+            self.assertEqual(self.run_loop().state, 'clean')
+
     def test_clean_first_review_preserves_separation_and_reports_validation(self):
         result = self.run_loop()
         self.assertEqual(result.state, "clean", result.render())
