@@ -10,6 +10,7 @@ import time
 from uuid import uuid4
 
 from . import TaskError
+from .command import command_name
 from .metrics import observe_run
 from . import publish as publication
 from .agent import AgentExecution, AgentOptions, AgentOverrides, adapter_for, codex_repository_policy, resolve_agent_options
@@ -20,7 +21,7 @@ from .handoff import integration_handoff
 from .implementation_pass import binding
 from .integration_state import IntegrationStore, abandoned_context, check_integration, parse_result
 from .linear import Linear
-from .publication_rebase import (IntegrationConflict, REVIEW_REQUIRED, check_ignored_obstructions,
+from .publication_rebase import (IntegrationConflict, review_required, check_ignored_obstructions,
                                 checkout_index, continue_rebase, integration_plan, replay, validate_record)
 from .publication_state import PublicationStore, verify_publication_history
 from .review import resolve_review_workspace
@@ -292,7 +293,7 @@ def abandonment_runtime(context, identities, adapter):
 def check_git_environment():
     if any(k in os.environ for k in ("GIT_INDEX_FILE", "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR",
                                     "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")):
-        raise TaskError("Unset Git routing environment overrides before task integrate")
+        raise TaskError(f"Unset Git routing environment overrides before {command_name()} integrate")
 
 
 def abandon_integration(identifier, context_id):
@@ -324,7 +325,7 @@ def _abandon_integration(identifier, context_id):
         context = registry.get(context_id)
         if record["state"] == "abandoned" and context == abandoned_context(record):
             state_store.check_abandoned(record, registry, identifier)
-            return f"{context_id} is already abandoned; evidence retained. Run task integrate {identifier} explicitly for a fresh attempt."
+            return f"{context_id} is already abandoned; evidence retained. Run {command_name()} integrate {identifier} explicitly for a fresh attempt."
         if (context["state"] != "uncertain" or context["retired_at"] is not None or context["agent"] != "codex"
                 or context["resumability"] != "unknown"
                 or any(context[k] is not None for k in ("session_id", "session_kind", "herdr_session"))
@@ -364,7 +365,7 @@ def _abandon_integration(identifier, context_id):
         state_store.archive(record, create=True)  # Durable audit survives the next attempt's claim.
         registry.abandon_integration(context, record["abandonment"]["at"])
         return (f"Abandoned {context_id}; checkout, output location, context identity and provenance retained. "
-                f"Run task integrate {identifier} explicitly for a fresh attempt.")
+                f"Run {command_name()} integrate {identifier} explicitly for a fresh attempt.")
 
 
 def integrate(identifier, *, agent_kind=None, model=None, mode=None, timeout=1800):
@@ -392,8 +393,8 @@ def integrate(identifier, *, agent_kind=None, model=None, mode=None, timeout=180
         elif previous is not None or any(c["role"] == "integration" and c["state"] != "retired"
                                          for c in registry.list(identifier, include_retired=True)):
             raise TaskError("Integration already has durable evidence; inspect its context and checkout. "
-                            "No replay is allowed; a proven pending installation continues through task pr. "
-                            "For a sessionless stopped uncertain Codex attempt, inspect task integrate --help for --abandon")
+                            f"No replay is allowed; a proven pending installation continues through {command_name()} pr. "
+                            f"For a sessionless stopped uncertain Codex attempt, inspect {command_name()} integrate --help for --abandon")
         saved = store.read()
         accepted = saved["acceptance"]
         publication.verify_acceptance(accepted, issue, project, repo, workspace, endpoint, registry)
@@ -442,7 +443,7 @@ def integrate(identifier, *, agent_kind=None, model=None, mode=None, timeout=180
             record_published(remote_head or pulls[0]["head"].get("sha"))
             raise TaskError("Task is already published; integration is forbidden. Recover manually without force-push")
         if base == source["base_commit"]:
-            raise TaskError("Reviewed base has not advanced; use task pr")
+            raise TaskError(f"Reviewed base has not advanced; use {command_name()} pr")
         title, body = publication.prepare_metadata(issue, accepted)
         with publication.prepared_index(git) as (_, tree, index):
             if tree_content(git.repo, tree) != source["content"]:
@@ -464,7 +465,7 @@ def integrate(identifier, *, agent_kind=None, model=None, mode=None, timeout=180
         except IntegrationConflict:
             pass
         else:
-            raise TaskError("Deterministic integration is conflict-free; run task pr. No integration agent was launched")
+            raise TaskError(f"Deterministic integration is conflict-free; run {command_name()} pr. No integration agent was launched")
         verify_source()
         verify_unpublished()
         pass_id = str(uuid4())
@@ -501,11 +502,11 @@ def integrate(identifier, *, agent_kind=None, model=None, mode=None, timeout=180
                 continue_rebase(git, saved, store, publication.native_git, installation,
                                 verify_identity=installation)
             except TaskError as error:
-                if str(error) != REVIEW_REQUIRED or saved["rebase"]["result"] is None:
+                if str(error) != review_required() or saved["rebase"]["result"] is None:
                     raise
             installation.finish()
             record["state"] = "installed"
-            return REVIEW_REQUIRED + f" Integration checkout retained at {path}."
+            return review_required() + f" Integration checkout retained at {path}."
         except BaseException as error:
             if record["state"] not in {"proven", "installed", "stopped"}:
                 record["state"] = "uncertain"

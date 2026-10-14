@@ -6,6 +6,7 @@ import json
 import re
 
 from . import TaskError
+from .command import command_name
 
 
 def publication_summary_limit(identifier):
@@ -33,7 +34,7 @@ def publication_metadata(value, *, identifier=None):
                 or " ".join(summary.split()) != summary or summary.endswith((".", "!", "?"))
                 or re.search(r"\([A-Z][A-Z0-9]*-[0-9]+\)$", summary)):
             raise TaskError(f"Publication summary must be a concise lower-case action phrase of at most {limit} characters, "
-                            "without a type prefix, issue suffix, or sentence punctuation; run task review again")
+                            f"without a type prefix, issue suffix, or sentence punctuation; run {command_name()} review again")
     return value
 
 

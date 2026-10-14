@@ -10,6 +10,7 @@ import threading
 import time
 
 from . import TaskError
+from .command import command_name
 from .ownership import ownership_gate
 from .review_result import unique_object
 from .workspace import Git
@@ -92,10 +93,10 @@ def prepare_review_continuation(saved, git, binding, base):
     head = git.command("rev-parse", "HEAD").strip()
     if intent is not None and (intent.get("publishing_head") or head != saved["acceptance"]["review_state"]["head"]):
         if lineage is None or lineage["cycles"][-1]["intent"] != intent:
-            raise TaskError("Publication is unfinished; rerun task pr before a new review so its frozen commit/PR evidence is preserved")
+            raise TaskError(f"Publication is unfinished; rerun {command_name()} pr before a new review so its frozen commit/PR evidence is preserved")
     if lineage is not None:
         if lineage["cycles"][-1]["state"] != "complete":
-            raise TaskError("Publication is unfinished; rerun task pr to reconcile its frozen commit and PR before a new review")
+            raise TaskError(f"Publication is unfinished; rerun {command_name()} pr to reconcile its frozen commit and PR before a new review")
         if head != lineage["head"]:
             raise TaskError("Published history changed: follow-up review requires HEAD at the latest published SHA "
                             f"{lineage['head']}. Inspect local history; keep follow-up edits uncommitted")
@@ -103,7 +104,7 @@ def prepare_review_continuation(saved, git, binding, base):
             raise TaskError("Published task base advanced or changed; review continuity requires the pinned published base. "
                             "Automatic rebase is forbidden; integration against an advanced base needs manual review")
     if lineage is None and history is not None:
-        raise TaskError("Prior publication lacks completed review/PR lineage; rerun task pr with its original acceptance/intent "
+        raise TaskError(f"Prior publication lacks completed review/PR lineage; rerun {command_name()} pr with its original acceptance/intent "
                         "or inspect legacy history manually before starting follow-up review")
 
 

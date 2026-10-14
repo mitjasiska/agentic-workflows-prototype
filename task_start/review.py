@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from . import TaskError
+from .command import command_name
 from .metrics import observe_run
 from .pass_delivery import object_digest
 from .agent import AgentExecution, AgentOptions, AgentOverrides, adapter_for, codex_repository_policy, resolve_agent_options
@@ -211,7 +212,7 @@ def review_pass(issue, project, repo, registry, identities, workspace, anchor, b
     saved = store.read()
     check_integration(store, saved, registry, issue, project, repo, identities)
     if saved["rebase"] is not None and saved["rebase"].get("result") is None:
-        raise TaskError("Unpublished rebase is pending; rerun task pr to finish it before starting independent review")
+        raise TaskError(f"Unpublished rebase is pending; rerun {command_name()} pr to finish it before starting independent review")
     if saved["rebase"] is not None and saved["publication_history"] is None:
         # Review the installed basis, even if another task has advanced main.
         # Publication independently checks whether this base is still eligible.

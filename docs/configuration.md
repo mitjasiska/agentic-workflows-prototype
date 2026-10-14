@@ -4,57 +4,53 @@
 
 Installation, project mapping, issue structure, task readiness, implementation
 scope, agent selection, review validation, repository permission profiles, and
-GitHub API credentials and SSH-agent setup for the Agentic Workflows Lite (AWL) `task` CLI.
+GitHub API credentials and SSH-agent setup for the Agentic Workflows Lite (AWL) `awl` CLI.
 The first public release is a **Developer Preview** for local, single-machine use.
 
 ## Installation and project mapping
 
-Requires Python 3.12, Git, and Herdr on `PATH`, with a running Herdr session.
-Agent handoff also requires the selected, authenticated Codex or Pi CLI on `PATH`.
-The commands and JSON responses were checked against Herdr 0.9.1 and Codex CLI
-0.157.1. Pi transport was checked against Pi CLI 0.87.1 and Herdr 0.9.1;
-run `pi --help` to verify the installed interface.
+V1 is Linux-only; Windows and macOS are unsupported. See the
+[README setup](../README.md#setup) for prerequisites, Git-source installation with
+uv, upgrade/uninstall commands, editable checkout installation, and first-task setup.
+The distribution is `agentic-workflows-lite`, and its only installed command is
+`awl`. The checkout's `./task` remains a development/compatibility entry point.
+Commands shown as `task` in the deeper guides can be invoked as `awl` with the same
+arguments.
 
-1. Clone [agentic-workflows-lite](https://github.com/mitjasiska/agentic-workflows-lite)
-   and your project repositories.
-2. Copy [`config/local.example.toml`](../config/local.example.toml) to
-   `~/.agentic-workflows-lite/config.toml` (create the directory first).
-3. Set `projects_root`, your Linear personal API key, and `[agent]` in that local
-   file. The key needs read access to the issues, projects and team statuses, and
-   permission to update issues. Keep it private; never commit the populated file.
-4. Copy [`config/projects.example.toml`](../config/projects.example.toml) to
-   `config/projects.toml` inside this CLI checkout. Replace the synthetic targets
-   with your own mappings and remove `example_only = true`. The runtime file is
-   ignored by Git.
-5. Add the cloned repository directory to your `PATH`, then run:
+The existing transport compatibility evidence covers Herdr 0.9.1, Codex CLI
+0.157.1, and Pi CLI 0.87.1; it is not new live validation of packaging.
 
-   ```sh
-   task start DEV-7
-   ```
+### Private registry selection
 
-The executable `task` lives at the repository root. For example, in a POSIX shell:
+| Mode | Registry location |
+| --- | --- |
+| Non-editable install (wheel or Git URL) | `~/.agentic-workflows-lite/projects.toml` |
+| `./task` in a Git checkout, or `awl` editable from it | Permanent AWL checkout's `config/projects.toml` |
 
-```sh
-export PATH="/absolute/path/to/agentic-workflows-lite:$PATH"
-task start DEV-7
-```
+Selection starts at the loaded Python module, never the caller's working
+directory. If its source root has no `.git` entry, AWL uses the user-private path;
+it does not search parent directories, read a sibling `config/projects.toml`, or
+write into site-packages. This also applies to unpacked sources without Git
+metadata. A normal installation remains usable after its build checkout is removed.
+The dashboard's HTML/CSS/JS and Pi helper are bundled with the installed Python
+package and need no source checkout or frontend build.
 
-It works from any directory; a symlink to `task` on your `PATH` works too. No package
-installation is required. On Windows, invoke
-`py -3.12 C:/path/to/agentic-workflows-lite/task start DEV-7`; a global Windows launcher
-is not included yet.
+Editable installations load Python directly from the selected Git checkout, so
+source edits are visible without reinstalling. Both entry points use its existing
+registry without duplication. When that source is in a linked worktree, discovery
+verifies its Git identity and worktree registration, then verifies the permanent
+checkout shares that exact Git common directory. It reads the registry there;
+do not copy the registry into linked worktrees. A competing worktree registry,
+aliased registry path, missing permanent checkout, or ambiguous Git identity is
+refused. A broken `.git` entry fails safely rather than falling back to the home
+registry. Inherited Git selector variables cannot redirect discovery.
 
-The private runtime registry is `config/projects.toml` in the permanent CLI
-checkout, independent of the invoking directory. When the CLI source is in a
-linked worktree, canonical config discovery verifies its Git identity and
-worktree registration, then verifies the permanent checkout shares that exact
-Git common directory. It reads the registry there; do not copy the registry into
-task worktrees. A competing worktree registry, aliased registry path, missing
-permanent checkout, or ambiguous Git identity is refused. Inherited Git selector
-variables cannot redirect this discovery. Status and the dashboard report
-configuration uncertainty through their existing read model instead of guessing
-a project. A standalone installation without Git metadata retains the sibling
-`config/projects.toml` path, with no parent-directory or caller-directory search.
+Create the registry explicitly using the
+[synthetic template](../config/projects.example.toml); no private configuration is
+bundled or migrated. Missing files identify the expected path, malformed TOML
+reports that path without echoing contents, and invalid mappings use the existing
+validation errors. Status and dashboard surface configuration uncertainty through
+their read model rather than guessing a project.
 Explicit Python `load_projects(path)` calls retain their specified path.
 Only synthetic
 [examples](../config/projects.example.toml) are tracked. Match `linear_project`
@@ -66,7 +62,7 @@ GitHub API access uses [local GitHub CLI authentication](#local-github-cli-authe
 or an explicit command-scoped token as described below:
 
 ```toml
-projects_root = "~/projects" # Or "C:/development/projects" on Windows
+projects_root = "~/projects"
 
 [linear]
 api_key = "" # Fill in your personal API key locally

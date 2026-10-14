@@ -14,6 +14,7 @@ from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 from . import TaskError
+from .command import command_name
 
 
 @dataclass(frozen=True)
@@ -187,7 +188,7 @@ def request(path: str, branch: str, *, method: str = "GET", data: dict | None = 
                  "invalid API request encoding; inspect request and credential configuration")
     if method != "GET":
         raise TaskError(f"GitHub PR write was not confirmed ({source}): {cause}. "
-                        "A write may already have reached GitHub; rerun task pr to discover and reuse "
+                        f"A write may already have reached GitHub; rerun {command_name()} pr to discover and reuse "
                         "any matching PR before another write") from None
     authentication = ("Use gh auth login --hostname github.com or a command-scoped GH_TOKEN/GITHUB_TOKEN "
                       "with repository Pull requests: read access. " if token is None else "")
@@ -258,9 +259,9 @@ def _publication_pull(repo, branch, base, heads, *, expected_number, stale_head=
                     or url[2] != str(item["number"])):
                 raise ValueError("conflicting PR")
         except (KeyError, TypeError, ValueError):
-            raise TaskError("Conflicting PR repository/head/base/state; inspect it before retrying task pr") from None
+            raise TaskError(f"Conflicting PR repository/head/base/state; inspect it before retrying {command_name()} pr") from None
     if stale_head is not None and any(item["head"]["sha"] == stale_head for item in (listed, pull)):
-        raise _StalePullHead("Conflicting PR repository/head/base/state; inspect it before retrying task pr")
+        raise _StalePullHead(f"Conflicting PR repository/head/base/state; inspect it before retrying {command_name()} pr")
     if pull["head"]["sha"] != listed["head"]["sha"]:
         raise TaskError("PR head changed during verification; retry after inspecting remote state")
     return pull
@@ -291,7 +292,7 @@ def publish_pull(repo: str, branch: str, base: str, head: str, title: str, body:
     verified = publication_pull(repo, branch, base, {head}, expected_number=expected_number,
                                 previous_head=previous_head, verify_published=before_write)
     if verified is None or verified.get("title") != title or verified.get("body") != body:
-        raise TaskError("GitHub has not confirmed the expected PR metadata; rerun task pr to verify/reuse it")
+        raise TaskError(f"GitHub has not confirmed the expected PR metadata; rerun {command_name()} pr to verify/reuse it")
     verify_local()
     observe_pull(verified)
     return verified["html_url"]

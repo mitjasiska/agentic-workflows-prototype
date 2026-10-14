@@ -14,6 +14,7 @@ from typing import Callable, Mapping, Protocol
 from uuid import UUID, uuid4
 
 from . import AgentNotReady, HerdrResponseError, TaskError
+from .command import command_name
 from .codex_rpc import CodexRPC, validate_readiness_only
 from .config import AgentConfig
 from .credentials import agent_environment, agent_shell_prefix
@@ -804,9 +805,9 @@ class CodexAdapter(HerdrAgentAdapter):
             delivery = ("Delivery may have occurred; never resend the task prompt." if queue_attempted else
                         "No task prompt was sent by this launch; READY alone is not delivery evidence.")
             return (f"Workspace {workspace.workspace_id} left intact. {delivery} "
-                    f"Inspect task contexts {execution.issue.identifier} --all and the exact pane/session. "
+                    f"Inspect {command_name()} contexts {execution.issue.identifier} --all and the exact pane/session. "
                     "For an interrupted loop, quit the agent and its jobs to the original shell, keep the pane open, "
-                    f"then run task loop {execution.issue.identifier} --abort from outside the checkout.")
+                    f"then run {command_name()} loop {execution.issue.identifier} --abort from outside the checkout.")
         try:
             original_pane = self.check_target(workspace, review=execution.purpose in {"review", "integration"})
             self.clear_shell_input(workspace)

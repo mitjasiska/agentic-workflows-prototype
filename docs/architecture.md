@@ -102,6 +102,12 @@ identity and registered Herdr membership without invoking lifecycle controllers
 or creating a history store. See the [status contract](lifecycle.md#task-status)
 for discovery, project grouping, operator guidance, and bounded evidence history.
 
+The entry point scopes command identity for workflow-authored recovery hints and
+errors: installed `awl` reports `awl` commands, while `./task` retains `task`.
+Dashboard readers retain that identity across collector and HTTP request threads.
+This formats command references where they are authored; it does not rewrite
+repository paths, issue contents, agent results, or saved historical prose.
+
 [`dashboard_server.py`](../task_start/dashboard_server.py) is a standard-library
 HTTP/JSON/SSE adapter over `task_status()` with no issue selector. One collector
 refreshes its disposable in-memory cache from persisted local state, sequentially
@@ -137,13 +143,12 @@ policy, with no AWL authentication layer. No arbitrary file, task command, or
 provider API is reachable through HTTP. The frontend uses DOM text nodes for projected values
 and displays canonical guidance without computing recovery choices.
 
-Static assets live in repository-root [`web/`](../web/): `index.html`, `app.js`,
-and `styles.css`. Their explicit paths resolve from the installed Python module,
-never the caller's directory, and startup fails if the bundle is incomplete.
-**Distribution resource contract for DEV-16:** include this `web/` directory as
-a sibling of `task_start/` in the same installed application tree/release, or adapt
-the single `asset_root()` resolver when implementing packaging. Do not require
-a separate frontend install/build or fall back to files in the caller's checkout.
+Static assets live in [`task_start/web/`](../task_start/web/): `index.html`,
+`app.js`, and `styles.css`. Setuptools includes these exact files and
+`pi_session.mjs` as package data. Their paths resolve from the loaded Python
+module in both source and installed modes, never the caller's directory, and
+startup fails if the dashboard bundle is incomplete. No separate frontend
+install/build or caller-checkout fallback is required.
 Focused dashboard tests exercise relocated resources, the CLI from another
 directory, canonical projection adaptation, separate-process persisted updates,
 SSE/reconnect, uncertainty, removal, and read-only transport. Browser inspection
@@ -490,6 +495,23 @@ recovery and path-reuse checks. Process checks use a synthetic Linux process fil
 worktrees without scope metadata, exact GitHub/ancestry proof, ambiguity and
 ownership refusals, concurrent changes and recovery at each removal boundary.
 Tests need no API key, network access, agent installation, or real Herdr workspaces.
+
+Packaging checks in [`test_packaging.py`](../tests/test_packaging.py) build an
+sdist and wheel and install normal and editable copies in disposable environments.
+They require Python's `venv`/`ensurepip` support and `setuptools>=77` in the test
+interpreter. Provision these build/test tools once (network may be needed for
+setup); the tests themselves build and install offline, without touching a real
+user tool environment or private configuration:
+
+```sh
+python3.12 -m venv /tmp/awl-packaging-checks
+/tmp/awl-packaging-checks/bin/python -m pip install 'setuptools>=77'
+/tmp/awl-packaging-checks/bin/python -m unittest discover -s tests -p 'test_packaging.py' -v
+```
+
+The packaging module reports a skip if its build prerequisites are absent; such a
+skip is not evidence that packaging passed. Use a provisioned interpreter for the
+full pre-merge gate as well, or separately evidence the packaging checks.
 
 Focused implementation/review checks for forced cleanup include cleanup and
 integration-recovery coverage:

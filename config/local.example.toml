@@ -1,7 +1,6 @@
 # Copy to ~/.agentic-workflows-lite/config.toml and edit locally.
 # GitHub API credentials do not belong in this TOML file.
 # See config/secrets.example.env and docs/configuration.md for private shell setup.
-# Windows example: projects_root = "C:/development/projects"
 projects_root = "~/projects"
 
 [linear]

@@ -13,12 +13,15 @@ import shutil
 import tempfile
 
 from . import TaskError
+from .command import command_name
 from .review_result import publication_fingerprint
 from .review_state import digest, snapshot, tree_content
 from .workspace import run
 
 
-REVIEW_REQUIRED = "Task rebased onto the updated base; run a new independent task review before rerunning task pr. Nothing was pushed."
+def review_required():
+    return (f"Task rebased onto the updated base; run a new independent {command_name()} review "
+            f"before rerunning {command_name()} pr. Nothing was pushed.")
 
 
 class IntegrationConflict(TaskError):
@@ -33,7 +36,7 @@ def replay(command, base, old_base):
     except TaskError:
         error = IntegrationConflict if command("ls-files", "--unmerged", "-z") else TaskError
         raise error("Disposable rebase conflicts or cannot be completed safely; task branch, index and files are unchanged. "
-                    "Use task integrate for reviewed uncommitted conflicts, or resolve/rebase manually and review again") from None
+                    f"Use {command_name()} integrate for reviewed uncommitted conflicts, or resolve/rebase manually and review again") from None
 
 
 def validate_record(rebase):
@@ -143,7 +146,7 @@ def install_checkout(git, source, target, verify_source, *, verify_identity=None
             os.replace(lock, index)
         except OSError:
             raise TaskError("Rebase checkout/index installation was not confirmed; inspect task files/index "
-                            "and rerun task pr to verify continuation") from None
+                            f"and rerun {command_name()} pr to verify continuation") from None
         finally:
             lock.unlink(missing_ok=True)
 
@@ -273,7 +276,7 @@ def continue_rebase(git, saved, store, native, verify_installation, *, verify_id
         head = native(git.repo, "commit-tree", *signing, step["tree"], "-p", parent,
                       "-m", step["message"], env=env, refs=True).strip()
         if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head):
-            raise TaskError("Git did not return a rebased commit identity; rerun task pr to inspect continuation")
+            raise TaskError(f"Git did not return a rebased commit identity; rerun {command_name()} pr to inspect continuation")
         rebase["commits"].append(head)
         validate_commits(git, rebase)
         store.write(saved)
@@ -309,4 +312,4 @@ def continue_rebase(git, saved, store, native, verify_installation, *, verify_id
     else:
         store.write(completed, before_replace=verify_identity)
     rebase["result"] = result
-    raise TaskError(REVIEW_REQUIRED)
+    raise TaskError(review_required())

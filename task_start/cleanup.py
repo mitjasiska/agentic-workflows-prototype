@@ -21,6 +21,7 @@ from uuid import UUID, uuid4
 from types import SimpleNamespace
 
 from . import HerdrResponseError, TaskError
+from .command import command_name
 from .contexts import ContextRegistry, HerdrContexts, context_reference, now
 from .agent import AgentOptions, adapter_for
 from .ownership import ownership_gate, ownership_operation
@@ -315,7 +316,7 @@ def merged_publication(git, base, identifier, target, saved):
                 raise TaskError("Private review/integration identity differs from the selected execution")
     history = saved["publication_history"]
     if history == "unknown":
-        raise TaskError("Legacy publication intent lacks exact execution identity; finish task pr reconciliation first")
+        raise TaskError(f"Legacy publication intent lacks exact execution identity; finish {command_name()} pr reconciliation first")
     verify_publication_history(history, binding, identity)
     if saved["intent"] is not None:
         intent = saved["intent"]
@@ -331,11 +332,11 @@ def merged_publication(git, base, identifier, target, saved):
 
 
 def cleanup_recovery(identifier, repo):
-    return (f"Run task contexts {identifier} --all, git -C {shlex.quote(str(repo))} worktree list, "
+    return (f"Run {command_name()} contexts {identifier} --all, git -C {shlex.quote(str(repo))} worktree list, "
             f"and herdr worktree list --cwd {shlex.quote(str(repo))} to locate the conflicting execution. "
             "Quit its agents and resolve the reported Git/Herdr identity or merge conflict before retrying "
-            f"task cleanup {identifier} --force. For multiple candidates, select a merged execution with "
-            f"task cleanup {identifier} --force --branch <exact-local-branch>, then clean the remaining execution. "
+            f"{command_name()} cleanup {identifier} --force. For multiple candidates, select a merged execution with "
+            f"{command_name()} cleanup {identifier} --force --branch <exact-local-branch>, then clean the remaining execution. "
             "The selector still requires one exact Git/Herdr match and positive merge proof; "
             "it does not infer slice scope or accept a path or label as authorization. "
             "Keep private evidence intact; do not create scope metadata to bypass recovery checks.")
@@ -457,7 +458,7 @@ def check_unreserved(registry, repository, worktree, *, endpoint=None, workspace
         for pending in normal_retirements(git):
             if (worktree is not None and any(overlapping(Path(worktree), p, read_mounts()) for p in retirement_paths(pending))
                     or workspace_id is not None and workspace_id == pending.workspace_id):
-                raise TaskError("Pending workspace retirement reserves this resource; finish task cleanup before acquiring a claim")
+                raise TaskError(f"Pending workspace retirement reserves this resource; finish {command_name()} cleanup before acquiring a claim")
     pending = [j for j in journals if j["state"] == "pending"]
     if not pending:
         return
@@ -1424,7 +1425,7 @@ def discard_execution(issue, project, repo, *, branch=None):
                 journal, record = pending[0]
                 if branch is not None and branch != record["branch"]:
                     raise TaskError(f"Pending cleanup owns {record['branch']!r}; finish it with "
-                                    f"task cleanup {issue.identifier} --force before selecting another branch")
+                                    f"{command_name()} cleanup {issue.identifier} --force before selecting another branch")
                 if branch is not None and "selected_branch" not in record:
                     if "merged" not in record:
                         raise TaskError("Pending unpublished disposal must resume without --branch; selection requires merge proof")
@@ -1486,6 +1487,6 @@ def discard_execution(issue, project, repo, *, branch=None):
                 f"Bounded disposal provenance: {journal.path}")
     except OSError:
         raise TaskError(f"Forced cleanup was interrupted by a filesystem error; preserve its journal and "
-                        f"rerun task cleanup {issue.identifier} --force after inspection") from None
+                        f"rerun {command_name()} cleanup {issue.identifier} --force after inspection") from None
     except TaskError as error:
         raise TaskError(f"{error}\n{cleanup_recovery(issue.identifier, repo)}") from None
