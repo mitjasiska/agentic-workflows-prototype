@@ -103,10 +103,12 @@ def parser(prog: str = "task") -> argparse.ArgumentParser:
                           help="Explicitly continue the exact paused boundary")
     controls.add_argument("--retry-review", dest="action", action="store_const", const="retry-review",
                           help="After resolving external blockers, continue a completed blocked review using saved findings/checks")
+    controls.add_argument("--extend", dest="action", action="store_const", const="extend",
+                          help="Increase an exhausted loop's explicit bounds, preserving its run, original conversations and unresolved findings")
     controls.add_argument("--status", dest="action", action="store_const", const="status",
                           help="Inspect checkpoint without resuming or contacting Linear")
     controls.add_argument("--new", dest="action", action="store_const", const="new",
-                          help="Explicitly replace a stopped loop after inspection, with a fresh reviewer; blocked reviews require --retry-review")
+                          help="Replace a stopped loop with a fresh reviewer; exhausted pending fixes require --extend instead of --new --from-review; blocked reviews require --retry-review")
     controls.add_argument("--abort", dest="action", action="store_const", const="abort",
                           help="Abandon an unfinished pass after Linux registered-execution checks, preserving checkout and session history; Ctrl+C alone does not abort")
     loop_command.set_defaults(action="run")
@@ -114,8 +116,8 @@ def parser(prog: str = "task") -> argparse.ArgumentParser:
                               help="Explicitly enter review of completed implementation (adopt exact standalone evidence when present)")
     add_agent_options(loop_command, prefix="i-", role="initial implementation")
     add_agent_options(loop_command, prefix="r-", role="reviewer")
-    loop_command.add_argument("--max-reviews", type=int, help="Review limit (default 3; maximum 20)")
-    loop_command.add_argument("--max-passes", type=int, help="Total pass limit (default 6; maximum 40)")
+    loop_command.add_argument("--max-reviews", type=int, help="Total review limit (default 3; maximum 20); --extend increases the saved total")
+    loop_command.add_argument("--max-passes", type=int, help="Total pass limit (default 6; maximum 40); --extend increases the saved total")
     loop_command.add_argument("--timeout", type=int, metavar="SECONDS", help="Advisory warning threshold per pass; keeps observing (configured [loop] timeout or 7200; maximum 86400)")
     loop_command.add_argument("--json", action="store_true", help="Print the combined lifecycle result")
     pr_command = commands.add_parser("pr", help="Commit and publish the exact clean-reviewed task as a GitHub PR")

@@ -239,7 +239,7 @@ def event(source, phase, state, *, context_id=None, pass_id=None, timestamp=None
                 pass_id=pass_id, timestamp=timestamp, **details)
 
 
-def guidance(task, observable=False, blocked_retry=None):
+def guidance(task, observable=False, blocked_retry=None, extension=None):
     """Hints only: no launch, resume, receipt polling, or lifecycle mutation."""
     issue, state = task['issue'], task['state']
     result = dict(kind='none', human_action_required=False, reconciliation_required=False,
@@ -258,6 +258,9 @@ def guidance(task, observable=False, blocked_retry=None):
                       command=f'{command_name()} loop {issue} --retry-review',
                       message='Resolve the external review blocker first, then explicitly retry with saved findings and checks. '
                               'Checkout and session verification may still refuse continuation.')
+    elif extension and state == 'escalated' and task['controller'] == 'unowned':
+        result.update(kind='extend' if extension['command'] else 'inspect', human_action_required=True,
+                      command=extension['command'], message=extension['message'])
     elif task['controller'] == 'held' and state in {'integration_pending', 'publication_pending', 'cleanup_pending', 'aborting'}:
         result['message'] = 'A controller owns this checkout and its saved operation is pending; no intervention is indicated.'
     elif state == 'interrupted' and observable and task['controller'] == 'unowned':
@@ -709,14 +712,18 @@ def _read_task(issue, repo, path, contexts, registry, projects, root, discovery,
     task['history'] = dict(limit=HISTORY_LIMIT, ordering='source_order',
         truncated=len(events) > HISTORY_LIMIT or history_truncated,
         entries=events[-HISTORY_LIMIT:])
-    blocked_retry = None
+    blocked_retry = extension = None
     if loop:
-        from .loop_state import blocked_review_retry
+        from .loop_state import blocked_review_retry, extension_guidance
         try:
             blocked_retry = blocked_review_retry(loop)
         except TaskError:
             pass
-    task['guidance'] = guidance(task, observable, blocked_retry)
+        try:
+            extension = extension_guidance(loop)
+        except TaskError:
+            pass
+    task['guidance'] = guidance(task, observable, blocked_retry, extension)
     if (loop_report is not None and loop and task['workspace']['registration'] == 'registered'
             and not any(e['code'] not in {'controller', 'observation', 'selection'} for e in errors)
             and task['state'] != 'stale_review'

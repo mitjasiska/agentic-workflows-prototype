@@ -20,6 +20,7 @@ from .contexts import ContextRegistry, HerdrContexts, allocate_launch, pending_l
 from .implementation_pass import binding, implementation_pass, implementation_target, initial_execution, parse_implementation
 from .linear import Linear, LinearUnavailable
 from .loop_state import (LoopStore, PauseRequested, blocked_review_retry, preserve_blocked_review,
+                         BUDGET_STOP_REASON, extension_limits, extension_guidance, guard_review_first_replacement,
                          startup_recovery_blocker, unclaimed_existing_boundary)
 from .publication_state import PublicationStore, prepare_review_continuation
 from .preparation import check_issue_structure, prepare_task
@@ -63,7 +64,7 @@ def bootstrap(env, options, global_settings, *, ownership=None):
     env.base = Git(env.repo).command("rev-parse", "--verify", f"refs/heads/{env.project.base_branch}^{{commit}}").strip()
 
 
-def idle_reviewers(env, expected=None):
+def idle_reviewers(env, expected=None, *, require_observed_idle=False):
     """Do not start edits alongside another live/uncertain reviewer turn."""
     for item in env.registry.list(env.issue.identifier):
         if item["role"] != "review":
@@ -75,6 +76,10 @@ def idle_reviewers(env, expected=None):
         options = AgentOptions(context["agent"], context["model"], context["mode"])
         adapter = adapter_for(options)
         reference = adapter.verify_review_session(env.workspace, binding(context)["session"])
+        if require_observed_idle and (pane is None or pane.get("agent") is None):
+            # Retained conversation identity proves resumability, not inactivity.
+            # A new budget grant must not rely on absent runtime reporting.
+            raise TaskError(f"Reviewer {context['context_id']} inactivity is unverified; --extend requires its exact runtime to report idle/done before authorizing work")
         if pane is not None and pane.get("agent") is not None:
             workspace = replace(env.workspace, pane_id=pane["pane_id"], tab_id=pane["tab_id"])
             execution = AgentExecution(env.issue, env.repo, workspace, options, "Loop boundary identity check",
@@ -163,6 +168,10 @@ def report(state, pause=False):
     else:
         next_action = (f"After resolving the external blocker, run {command_name()} loop {state['binding']['issue']} "
                        f"--retry-review to {'send saved findings for fixes and re-review' if phase == 'fixes' else 'retry reviewer validation'}")
+    try:
+        next_action = extension_guidance(state)["message"]
+    except TaskError:
+        pass
     return LoopResult(dict(version=1, run_id=state["run_id"], issue=state["binding"]["issue"],
         state=state["status"], reason=state["reason"], next_action=next_action,
         passes=state["pass_count"], reviews=state["review_count"],
@@ -267,7 +276,7 @@ class LoopRuntime:
         self.startup_recovery = startup_recovery
         self.env = None
 
-    def prepare(self, state, *, restore_blocked_reviewer=False):
+    def prepare(self, state, *, restore_blocked_reviewer=False, require_observed_idle=False):
         initial = state["next_phase"] == "initial_implementation"
         env = environment(self.identifier, pending_implementation=state["implementation"]["context_id"] if initial else None)
         if task_binding(env) != state["binding"] or requirements(env) != state["requirements"]:
@@ -296,7 +305,7 @@ class LoopRuntime:
             if any(reviewer[k] != state["reviewer_options"][o] for k, o in
                    (("agent", "kind"), ("model", "model"), ("mode", "mode"))):
                 raise TaskError("Blocked reviewer settings conflict with the saved pass")
-        idle_reviewers(env, reviewer)
+        idle_reviewers(env, reviewer, require_observed_idle=require_observed_idle)
         self.env = env
         return reviewer
 
@@ -538,7 +547,7 @@ def drive(store, state, runtime, *, on_pass_result=None):
             if state["pass_count"] >= state["max_passes"] or (
                     state["next_phase"] in {"review", "fixes", "rereview"}
                     and state["review_count"] >= state["max_reviews"]):
-                state.update(status="escalated", reason="Autonomous pass/review limit reached; human inspection required")
+                state.update(status="escalated", reason=BUDGET_STOP_REASON)
                 break
             runtime.prepare(state)
 
@@ -632,13 +641,18 @@ def loop(identifier, *, action="run", agent_kind=None, model=None, mode=None,
          impl_agent_kind=None, impl_model=None, impl_mode=None):
     implementation_overrides = (impl_agent_kind, impl_model, impl_mode)
     overrides = (agent_kind, model, mode, max_reviews, max_passes, timeout, *implementation_overrides)
-    if action not in {"run", "new", "continue", "retry-review", "pause", "status", "abort"}:
+    if action not in {"run", "new", "continue", "retry-review", "extend", "pause", "status", "abort"}:
         raise TaskError("Unknown loop control action")
     if from_review and action not in {"run", "new"}:
         raise TaskError("--from-review only starts a new loop; controls preserve the saved boundary")
-    if action not in {"run", "new"} and any(v is not None for v in overrides):
+    if action == "extend":
+        if any(v is not None for v in (agent_kind, model, mode, timeout, *implementation_overrides)):
+            raise TaskError("--extend preserves recorded agent/model/mode and timeout; only increased bounds are accepted")
+        if max_passes is None and max_reviews is None:
+            raise TaskError("--extend requires explicit --max-passes and/or --max-reviews increases")
+    if action not in {"run", "new", "extend"} and any(v is not None for v in overrides):
         raise TaskError("Loop controls preserve recorded settings/limits and do not accept selection overrides")
-    if action in {"run", "new"}:
+    if action in {"run", "new", "extend"}:
         if (max_reviews is not None and (type(max_reviews) is not int or not 1 <= max_reviews <= 20)
                 or max_passes is not None and (type(max_passes) is not int or not 1 <= max_passes <= 40)
                 or timeout is not None and (type(timeout) not in {int, float} or not 0 < timeout <= 86400)):
@@ -662,7 +676,7 @@ def loop(identifier, *, action="run", agent_kind=None, model=None, mode=None,
 
 def _loop(identifier, *, action, agent_kind, model, mode, max_reviews, max_passes, timeout,
           from_review, on_pass_result, impl_agent_kind, impl_model, impl_mode):
-    if action in {"pause", "status", "continue", "retry-review"}:
+    if action in {"pause", "status", "continue", "retry-review", "extend"}:
         with ownership_gate():
             store, path = control_store(identifier)
             if action == "pause":
@@ -673,6 +687,22 @@ def _loop(identifier, *, action, agent_kind, model, mode, max_reviews, max_passe
             if action == "status":
                 return report(*store.read())
         with PublicationStore(path).locked() as publication:
+            if action == "extend":
+                state, _ = store.read()
+                extension_limits(state, max_passes, max_reviews)
+                runtime = LoopRuntime(identifier, publication)
+                runtime.prepare(state, require_observed_idle=True)
+                retained = ReviewHandoffStore(path).read()
+                if retained and retained["consumed"] is None:
+                    raise TaskError("Unresolved standalone review handoff; reconcile with the ordinary loop command before --extend")
+                saved = publication.read()
+                if saved["rebase"] is not None and saved["rebase"].get("result") is None:
+                    raise TaskError("Unpublished rebase is pending; inspect publication before --extend")
+                prepare_review_continuation(saved, Git(path),
+                    {k: state["binding"][k] for k in ("issue", "repository", "worktree", "branch", "base_branch")},
+                    runtime.env.base)
+                state = store.extend(state, max_passes, max_reviews)
+                return drive(store, state, runtime, on_pass_result=on_pass_result)
             if action == "retry-review":
                 state, _ = store.read()
                 blocked_review_retry(state)
@@ -759,6 +789,8 @@ def _loop(identifier, *, action, agent_kind, model, mode, max_reviews, max_passe
         if existing:
             with PublicationStore(existing[1]).locked():
                 previous, _ = existing[0].read()
+                if from_review:
+                    guard_review_first_replacement(previous)
                 handoffs = ReviewHandoffStore(existing[1])
                 retained = handoffs.read()
                 if (previous["status"] not in {"aborting", "aborted"} and retained
@@ -815,6 +847,8 @@ def _loop(identifier, *, action, agent_kind, model, mode, max_reviews, max_passe
             retained = ReviewHandoffStore(env.workspace.path).read() if initial_options is None else None
             if action == "new" and store.path.exists():
                 previous, _ = store.read()
+                if from_review:
+                    guard_review_first_replacement(previous)
                 if previous["status"] == "aborting":
                     raise TaskError("Abort reconciliation is pending; rerun --abort before --new")
                 if (previous["status"] != "aborted" and retained and retained["consumed"] is None

@@ -333,6 +333,14 @@ are no findings. Saved validation limitations remain outstanding until passing
 review evidence is recorded. Human-decision findings require inspection.
 See [blocked review continuation](docs/lifecycle.md#blocked-review-continuation).
 
+If the loop stopped solely at its pass/review limit, inspect its pending boundary
+and explicitly increase the totals, for example
+`awl loop DEV-7 --extend --max-passes 10 --max-reviews 5` after a six-pass/three-review
+stop. This preserves I1/R1, counted passes and unresolved findings, subject to
+checkout and session verification. `--new --from-review` creates a fresh reviewer
+without prior findings and is refused when it would skip exhausted pending fixes.
+See [budget extension](docs/lifecycle.md#budget-exhaustion-continuation).
+
 To deliberately abandon an interrupted pass, stop the waiting controller with
 Ctrl+C, quit task agents to their original shells while keeping panes open, then
 run `awl loop DEV-7 --abort` from outside the checkout. On Linux V1 it verifies

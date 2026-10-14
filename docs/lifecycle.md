@@ -92,6 +92,12 @@ no human-decision findings, and remaining pass limits suggests `--retry-review`
 after the operator resolves its external blocker. The command still verifies
 runtime/provider identity before authorizing any new pass. Uncertain/conflicting
 evidence calls for manual inspection.
+At a proven budget-exhaustion boundary, loop reports and canonical status suggest
+an explicit `--extend` command with usable increased totals, preserving the original
+implementation/reviewer and unresolved findings. This is conditional guidance:
+the command must still verify current requirements, Git/base and idle/resumable
+sessions. At the supported ceilings, guidance explains that extension cannot
+provide enough capacity. The dashboard consumes this same projection.
 Trust/setup requires action in the original pane/controller. Abort/discard hints
 are explicitly conditional on deliberate abandonment and the commands' own
 ownership/publication checks; they do not certify that cleanup is safe.
@@ -844,7 +850,9 @@ implementation context for later fixes. The human selects the starting boundary;
 idle status alone never establishes completion. Existing-context entries never
 adopt an arbitrary running turn or create a replacement implementation context.
 Let its current turn finish before starting. `--from-review` can accompany `--new`,
-but cannot accompany `--continue`, `--retry-review`, `--status`, `--abort`, or `--pause-after-current`.
+but cannot accompany `--continue`, `--retry-review`, `--extend`, `--status`, `--abort`, or `--pause-after-current`.
+An exhausted checkpoint with actionable pending fixes refuses `--new --from-review`
+before replacement; see [budget extension](#budget-exhaustion-continuation).
 
 When no completed review is adopted, the first review uses the existing fresh review
 primitive with a newly allocated independent reviewer. It receives current requirements
@@ -979,6 +987,67 @@ boundary, use `--retry-review` after resolving its blocker; no Linear descriptio
 edit or copied chat prompt is needed.
 This control does not handle clean-review follow-up work or stale reviewer claims.
 
+### Budget exhaustion continuation
+
+After inspecting a loop stopped solely because its autonomous pass/review budget
+was exhausted, explicitly increase its saved **total** limits:
+
+```sh
+awl loop DEV-20 --extend --max-passes 10 --max-reviews 5
+# The source entry point supports the same control:
+./task loop DEV-20 --extend --max-passes 10 --max-reviews 5
+```
+
+For a six-pass/three-review stop with F4 pending at `next_phase=fixes`, this keeps
+all six passes and three reviews counted, sends F4 to the original I1 exactly once,
+then resumes the same R1 for focused re-review. Run ID, recorded results, findings,
+resolutions, settings and conversation bindings remain in the current checkpoint.
+Pending `review` and `rereview` boundaries also resume at that exact phase. If no
+reviewer has run yet, the pending first review allocates its first reviewer normally.
+No previous review is inferred clean and no missing finding is reconstructed.
+
+At least one total must explicitly increase; neither may decrease. Omitted totals
+retain their saved values. Limits remain at most 40 passes and 20 reviews, with
+enough capacity for the pending handoff **and** its independent review (two passes
+and one review for fixes). A larger total is authorization for that current run,
+not a counter reset or automatic extension. Further exhaustion requires another
+explicit increase. There is no extension beyond the supported ceilings.
+
+Under the existing worktree publication/controller lock, extension checks the
+saved limit-stop reason together with ordered completed pass/count/context evidence,
+structured outcomes, actionable findings and progress history. A reason string or
+an idle label alone is insufficient. It then verifies current issue/repository/
+worktree identity, requirements, Git/base snapshot, exact saved sessions and idle
+runtimes, with no unresolved active claim, delivery or competing standalone handoff.
+For extension, an absent reviewer pane or missing agent reporting leaves inactivity
+unverified, even when the saved conversation is resumable. Restore observation of
+the original reviewer reporting idle/done before requesting more budget.
+Unrelated escalation, non-progress, human decisions, real external-validation
+blockers, changed requirements and uncertain/missing conversations refuse without
+changing the checkpoint. Legacy checkpoints lacking durable delivery support or
+the full saved reviewer binding cannot be extended; inspect them without guessing
+history or substituting another conversation.
+
+Authorization atomically updates only limits and control state before returning
+to normal routing and receipt recovery. A racing pause stays sticky and requires
+`--continue`. After controller interruption, repeat the ordinary `awl loop DEV-20`
+to reconcile the authorized boundary or original claim; do not repeat `--extend`
+to replay work. The command never resends a claimed pass.
+
+`--extend` cannot accompany `--new`, `--from-review`, pause/continue/retry/abort/status
+controls, agent/model/mode selections or `--timeout`. Use `--retry-review` separately
+after resolving a genuinely blocked review's external prerequisite; extension
+cannot authorize that blocker. Use `--new` only for intended checkpoint replacement
+after inspection. In particular, `--new --from-review` creates a fresh reviewer
+and omits the previous structured findings. A proven exhausted `fixes` boundary
+with actionable findings rejects that combination before replacement and directs
+the operator to `--extend`. This protection also applies to legacy checkpoints
+whose pending fixes are proven but whose delivery or reviewer continuity evidence
+is insufficient to authorize extension; inspect that evidence without replacing
+the run. A completed implementation/fixes boundary remains
+eligible for review-first starts. If a newer run already replaced the checkpoint,
+extension examines only that current run and cannot resurrect the lost predecessor.
+
 ### Routing, bounds, and results
 
 Review handoffs request each finding with a stable `F1`-style `id` and a `category`:
@@ -1007,7 +1076,8 @@ seconds. `[loop] timeout` configures the same threshold. These settings persist
 across pauses. The initial implementation consumes one total pass;
 review count remains zero until review runs. Exhausting the review budget stops
 before fixes that could not be re-reviewed.
-Selection, timeout, and limit flags cannot accompany controls.
+Selection and timeout flags cannot accompany controls; only `--extend` accepts
+explicit increases to saved limit flags.
 
 Elapsed wall-clock time is advisory, not a token budget or an automatic stop.
 Implementation, fresh review, fixes, and re-review keep observing the original
