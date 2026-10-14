@@ -3,7 +3,6 @@
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass, replace
 import copy
-import hashlib
 import json
 import time
 from pathlib import Path
@@ -20,20 +19,17 @@ from .config import (check_project_settings_unchanged, load_local, load_projects
 from .contexts import ContextRegistry, HerdrContexts, allocate_launch, pending_launch, context_observer, context_reference
 from .implementation_pass import binding, implementation_pass, implementation_target, initial_execution, parse_implementation
 from .linear import Linear, LinearUnavailable
-from .loop_state import LoopStore, PauseRequested, startup_recovery_blocker, unclaimed_existing_boundary
+from .loop_state import (LoopStore, PauseRequested, blocked_review_retry, preserve_blocked_review,
+                         startup_recovery_blocker, unclaimed_existing_boundary)
 from .publication_state import PublicationStore, prepare_review_continuation
 from .preparation import check_issue_structure, prepare_task
 from .review import resolve_review_workspace, resolve_reviewer, review_pass, accept_review
-from .review_result import parse_verdict, publication_fingerprint
+from .review_result import finding_signature, parse_verdict, pending_review_checks, publication_fingerprint
 from .pass_delivery import PassDelivery, dispose, object_digest, pass_timing
 from .review_state import snapshot
 from .review_handoff_state import ReviewHandoffStore, eligible_review, task_binding, requirements
 from .workspace import Git, Herdr
 from .cleanup import disposed_context_history
-
-
-def fingerprint(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=True).encode()).hexdigest()
 
 
 def environment(identifier, *, allow_bootstrap=False, pending_implementation=None, recovery_implementation=None):
@@ -106,6 +102,8 @@ class LoopResult:
         lines = [f"{value['issue']} loop: {value['state']} — {value['passes']} passes, {value['reviews']} reviews",
                  value["reason"],
                  f"Contexts: {value['implementation_context']} / {value['reviewer_context'] or 'reviewer not started'}"]
+        if value.get("next_action"):
+            lines.append(value["next_action"])
         for item in value["implementation"]:
             lines.append(f"Implementation ({item['phase']}): {item['summary']}")
             if "task_assessment" in item:
@@ -154,8 +152,20 @@ def report(state, pause=False):
         for check in record["checks"]:
             if check not in checks:
                 checks.append(check)
+    next_action = None
+    try:
+        phase = blocked_review_retry(state)
+    except TaskError as error:
+        if (state["records"] and state["records"][-1]["phase"] in {"review", "rereview"}
+                and state["records"][-1]["state"] == "blocked" and state["next_phase"] is None
+                and state["active_pass"] is None):
+            next_action = f"Retry unavailable: {error}"
+    else:
+        next_action = (f"After resolving the external blocker, run {command_name()} loop {state['binding']['issue']} "
+                       f"--retry-review to {'send saved findings for fixes and re-review' if phase == 'fixes' else 'retry reviewer validation'}")
     return LoopResult(dict(version=1, run_id=state["run_id"], issue=state["binding"]["issue"],
-        state=state["status"], reason=state["reason"], passes=state["pass_count"], reviews=state["review_count"],
+        state=state["status"], reason=state["reason"], next_action=next_action,
+        passes=state["pass_count"], reviews=state["review_count"],
         implementation_context=state["implementation"]["context_id"],
         reviewer_context=state["reviewer"]["context_id"] if state["reviewer"] else None,
         implementation=implementations, review_iterations=reviews, resolutions=resolutions, validation=checks,
@@ -236,8 +246,7 @@ def route(state, result, after):
         else:
             ids = sorted(f["id"] for f in findings)
             # Also detect identical substantive output with renamed finding IDs.
-            signature = fingerprint(sorted((dict((k, v) for k, v in f.items() if k != "id") for f in findings),
-                                           key=lambda f: json.dumps(f, sort_keys=True)))
+            signature = finding_signature(findings)
             previous = {f["id"] for f in state["findings"]}
             repeated = any(s["ids"] == ids or s["signature"] == signature for s in state["seen"])
             if repeated or previous and previous <= set(ids):
@@ -258,7 +267,7 @@ class LoopRuntime:
         self.startup_recovery = startup_recovery
         self.env = None
 
-    def prepare(self, state):
+    def prepare(self, state, *, restore_blocked_reviewer=False):
         initial = state["next_phase"] == "initial_implementation"
         env = environment(self.identifier, pending_implementation=state["implementation"]["context_id"] if initial else None)
         if task_binding(env) != state["binding"] or requirements(env) != state["requirements"]:
@@ -276,8 +285,20 @@ class LoopRuntime:
                 adapter_for(AgentOptions(**state["reviewer_options"])).check_available()
         else:
             implementation_target(env, state["implementation"])
-        idle_reviewers(env, state["reviewer"])
+        reviewer = state["reviewer"]
+        if restore_blocked_reviewer and set(reviewer) == {"context_id"}:
+            # Older completed blocked passes retained the exact context selector,
+            # but did not copy its finalized session into the loop checkpoint.
+            # The registry owns that immutable binding; never select a new ID.
+            context, _ = resolve_reviewer(reviewer["context_id"], env.issue, env.workspace, env.repo,
+                                          env.endpoint, env.registry, env.identities)
+            reviewer = binding(context)
+            if any(reviewer[k] != state["reviewer_options"][o] for k, o in
+                   (("agent", "kind"), ("model", "model"), ("mode", "mode"))):
+                raise TaskError("Blocked reviewer settings conflict with the saved pass")
+        idle_reviewers(env, reviewer)
         self.env = env
+        return reviewer
 
     def execute(self, state, before_handoff, pass_observer):
         env, phase = self.env, state["next_phase"]
@@ -299,12 +320,17 @@ class LoopRuntime:
                                        before_handoff, pass_observer,
                                        initial_options=AgentOptions(**state["implementation_options"])
                                        if phase == "initial_implementation" else None, delivery=delivery,
-                                       metrics_context=metrics_context)
+                                       metrics_context=metrics_context,
+                                       review_checks=state["records"][-1]["checks"]
+                                       if phase == "fixes" and state["records"][-1].get("continuation") else ())
             self.completed_snapshot = delivery.completed_snapshot
             return result
         options = state["reviewer_options"]
         feedback = ({} if phase == "review" else
                     dict(findings=state["findings"], resolutions=state["records"][-1]["resolutions"]))
+        pending = pending_review_checks(state["records"])
+        if pending:
+            feedback["pending_checks"] = pending
         result = review_pass(env.issue, env.project, env.repo, env.registry, env.identities,
             env.workspace, env.anchor, env.base, env.endpoint, env.local,
             state["reviewer"]["context_id"] if state["reviewer"] else None,
@@ -315,7 +341,9 @@ class LoopRuntime:
             before_handoff=before_handoff, pass_observer=pass_observer, delivery=delivery,
             metrics_context=metrics_context)
         self.completed_snapshot = getattr(delivery, "completed_snapshot", None)
-        if result.context_id and result.state in {"clean", "findings"}:
+        if result.state == "blocked" and (result.invalidated or self.completed_snapshot is None):
+            raise TaskError("Blocked reviewer attempt lacks verified structured completion; inspect the original pass")
+        if result.context_id and result.state in {"clean", "findings", "blocked"}:
             state["reviewer"] = binding(env.registry.get(result.context_id))
         return dict(pass_id=result.pass_id, context_id=result.context_id, state=result.state,
                     summary=result.summary, findings=result.findings, checks=result.checks, resolutions=[])
@@ -402,7 +430,8 @@ class LoopRuntime:
             raise TaskError("Publication state changed during interrupted review")
         frozen = review["frozen"]
         verdict = parse_verdict(raw, value["pass_id"], identifier=env.issue.identifier, routing=True,
-                                frozen_fingerprint=publication_fingerprint(frozen) if frozen else None)
+                                frozen_fingerprint=publication_fingerprint(frozen) if frozen else None,
+                                required_checks=pending_review_checks(state["records"]))
         state["reviewer"] = value["context"]
         context_observer(env.registry, state["reviewer"]["context_id"])(
             dict(herdr_session=json.dumps(observed_reference), state="active", resumability="yes"))
@@ -578,7 +607,7 @@ def adopt_review(state, candidate):
 
 @ownership_operation
 def control_store(identifier, *, optional=False):
-    """Pause/status/continue locate exact private state without Linear or local config."""
+    """Loop controls locate exact private state without Linear or local config."""
     contexts = ContextRegistry().list(identifier)
     # Integration contexts retain a separate checkout for recovery/provenance.
     # Only implementation/review contexts identify the task's loop checkpoint.
@@ -603,7 +632,7 @@ def loop(identifier, *, action="run", agent_kind=None, model=None, mode=None,
          impl_agent_kind=None, impl_model=None, impl_mode=None):
     implementation_overrides = (impl_agent_kind, impl_model, impl_mode)
     overrides = (agent_kind, model, mode, max_reviews, max_passes, timeout, *implementation_overrides)
-    if action not in {"run", "new", "continue", "pause", "status", "abort"}:
+    if action not in {"run", "new", "continue", "retry-review", "pause", "status", "abort"}:
         raise TaskError("Unknown loop control action")
     if from_review and action not in {"run", "new"}:
         raise TaskError("--from-review only starts a new loop; controls preserve the saved boundary")
@@ -633,7 +662,7 @@ def loop(identifier, *, action="run", agent_kind=None, model=None, mode=None,
 
 def _loop(identifier, *, action, agent_kind, model, mode, max_reviews, max_passes, timeout,
           from_review, on_pass_result, impl_agent_kind, impl_model, impl_mode):
-    if action in {"pause", "status", "continue"}:
+    if action in {"pause", "status", "continue", "retry-review"}:
         with ownership_gate():
             store, path = control_store(identifier)
             if action == "pause":
@@ -644,6 +673,14 @@ def _loop(identifier, *, action, agent_kind, model, mode, max_reviews, max_passe
             if action == "status":
                 return report(*store.read())
         with PublicationStore(path).locked() as publication:
+            if action == "retry-review":
+                state, _ = store.read()
+                blocked_review_retry(state)
+                runtime = LoopRuntime(identifier, publication)
+                # Refuse drift or unresolved sessions without changing the checkpoint.
+                reviewer = runtime.prepare(state, restore_blocked_reviewer=True)
+                state = store.retry_review(state, reviewer)
+                return drive(store, state, runtime, on_pass_result=on_pass_result)
             state = store.continue_paused()
             # A pause outlives the runtime that proved the reservation safe.
             # Every continued initial handoff must establish that proof again,
@@ -688,6 +725,9 @@ def _loop(identifier, *, action, agent_kind, model, mode, max_reviews, max_passe
                 return drive(store, state, LoopRuntime(identifier, publication), on_pass_result=on_pass_result)
             blocker = startup_recovery_blocker(state)
             if blocker:
+                if (state["records"] and state["records"][-1]["phase"] in {"review", "rereview"}
+                        and state["records"][-1]["state"] == "blocked"):
+                    return report(*store.read())
                 raise TaskError("A loop checkpoint already exists; startup recovery blocked: " + blocker
                                 + ". Use --status to inspect; --continue only resumes a pause")
             if from_review:
@@ -724,6 +764,9 @@ def _loop(identifier, *, action, agent_kind, model, mode, max_reviews, max_passe
                 if (previous["status"] not in {"aborting", "aborted"} and retained
                         and retained["consumed"] is None and handoffs.consume(previous)):
                     return report(*existing[0].read())
+                if preserve_blocked_review(previous):
+                    raise TaskError("Blocked review evidence cannot be replaced with --new; inspect --status, "
+                                    "then use --retry-review only at a completed blocked review boundary")
             if previous["status"] == "aborted" and set(previous["implementation"]) == {"context_id"}:
                 if from_review:
                     raise TaskError("Initial implementation was never completed; use --new to start implementation")

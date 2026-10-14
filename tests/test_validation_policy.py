@@ -13,7 +13,7 @@ from task_start.agent import AgentOptions
 from task_start.config import ReviewValidationConfig, load_local
 from task_start.handoff import implementation_handoff, review_handoff
 from task_start.implementation_pass import parse_implementation
-from task_start.review_result import parse_verdict
+from task_start.review_result import parse_verdict, pending_review_checks
 from task_start.workspace import Workspace
 from test_task_start import ISSUE
 
@@ -144,6 +144,183 @@ class ValidationPolicyTests(unittest.TestCase):
                     parse_implementation(json.dumps(implementation), 'pass', [])
                 with self.assertRaises(TaskError):
                     parse_verdict(json.dumps(review), 'pass')
+
+    def test_review_check_scope_is_explicit_and_legacy_checks_still_parse(self):
+        check = dict(name='validation', result='not_run', details='Evidence unavailable')
+        verdict = dict(pass_id='pass', state='blocked', summary='Blocked', findings=[], checks=[check])
+        for scope in (None, 'review', 'merge'):
+            with self.subTest(scope=scope):
+                verdict['checks'] = [dict(check, scope=scope) if scope else check]
+                self.assertEqual(parse_verdict(json.dumps(verdict), 'pass'), verdict)
+        for scope in ('unknown', '', False, [], {}, None):
+            with self.subTest(invalid_scope=scope), self.assertRaises(TaskError):
+                parse_verdict(json.dumps(dict(verdict, checks=[dict(check, scope=scope)])), 'pass')
+
+    def test_only_structured_deferral_can_exempt_legacy_pending_check(self):
+        check = dict(name='arbitrary check', result='not_run', details='Deferred before merge')
+        verdict = dict(pass_id='pass', state='clean', summary='Clean, merge checks pending', findings=[],
+                       checks=[dict(check, scope='merge')])
+        self.assertEqual(parse_verdict(json.dumps(verdict), 'pass', required_checks=[check]), verdict)
+        # Names and prose alone cannot determine which checks are optional this pass.
+        for current in ([], [check], [dict(check, name='new name', scope='merge')]):
+            with self.subTest(current=current), self.assertRaises(TaskError):
+                parse_verdict(json.dumps(dict(verdict, checks=current)), 'pass', required_checks=[check])
+
+    def test_explicit_review_scope_or_failed_check_cannot_be_demoted_until_passed(self):
+        check = dict(name='browser', result='not_run', details='Browser unavailable')
+        for saved in (dict(check, scope='review'), dict(check, result='failed'),
+                      dict(check, result='failed', scope='merge')):
+            with self.subTest(saved=saved):
+                deferred = dict(check, scope='merge')
+                verdict = dict(pass_id='pass', state='clean', summary='Clean', findings=[], checks=[deferred])
+                with self.assertRaises(TaskError):
+                    parse_verdict(json.dumps(verdict), 'pass', required_checks=[saved])
+                history = [dict(phase='review', state='blocked', checks=[saved]),
+                           dict(phase='rereview', state='blocked', checks=[deferred])]
+                pending = pending_review_checks(history)
+                self.assertEqual(pending, [dict(deferred, scope='review')])
+                with self.assertRaises(TaskError):
+                    parse_verdict(json.dumps(verdict), 'pass', required_checks=pending)
+                passed = dict(check, result='passed', details='Independent validation passed')
+                self.assertEqual(parse_verdict(json.dumps(dict(verdict, checks=[passed])), 'pass',
+                                              required_checks=pending)['state'], 'clean')
+
+    def test_deferred_checks_stay_visible_without_blocking_review_routing(self):
+        deferred = dict(name='full regression', result='not_run', scope='merge', details='Pending human gate')
+        history = [dict(phase='review', state='blocked', checks=[deferred])]
+        pending = pending_review_checks(history)
+        self.assertEqual(pending, [deferred])
+        for state, findings in (('clean', []), ('findings', [dict(id='F2', category='implementation',
+                severity='high', explanation='A concrete defect', evidence='file:1', requirement='Fix it')])):
+            verdict = dict(pass_id='pass', state=state, summary='Regression pending', findings=findings,
+                           checks=[deferred])
+            with self.subTest(state=state):
+                self.assertEqual(parse_verdict(json.dumps(verdict), 'pass', required_checks=pending), verdict)
+                self.assertEqual(pending_review_checks(history + [dict(phase='rereview', **verdict)]), [deferred])
+
+    def test_conflicting_scopes_cannot_hide_required_validation(self):
+        deferred = dict(name='check', result='not_run', scope='merge', details='Pending')
+        required = dict(deferred, scope='review')
+        for checks in ([dict(required, result='passed'), deferred],
+                       [deferred, dict(required, result='passed')]):
+            history = [dict(phase='review', state='blocked', checks=checks)]
+            with self.subTest(checks=checks):
+                self.assertEqual(pending_review_checks(history), [required])
+        verdict = dict(pass_id='pass', state='clean', summary='Clean', findings=[], checks=[required])
+        with self.assertRaises(TaskError):
+            parse_verdict(json.dumps(verdict), 'pass', required_checks=[deferred])
+
+    def test_pending_required_checks_hold_findings_but_preserve_all_evidence(self):
+        browser = dict(name='browser', result='not_run', scope='review', details='Unavailable')
+        for category in ('implementation', 'human_decision'):
+            for checks in ([], [browser],
+                           [dict(browser, result='passed'), browser]):
+                with self.subTest(category=category, checks=checks):
+                    verdict = dict(pass_id='pass', state='findings', summary='New finding', checks=checks,
+                        findings=[dict(id='F2', category=category, severity='high', explanation='Needs correction',
+                                       evidence='file:2', requirement='Acceptance')])
+                    result = parse_verdict(json.dumps(verdict), 'pass', routing=True, required_checks=[browser])
+                    self.assertEqual(result['state'], 'blocked')
+                    self.assertTrue(result['summary'].startswith(verdict['summary']))
+                    self.assertIn('browser', result['summary'])
+                    for key in ('pass_id', 'checks', 'findings'):
+                        self.assertEqual(result[key], verdict[key])
+        for state in ('blocked', 'failed'):
+            verdict = dict(pass_id='pass', state=state, summary='Cannot complete', findings=[], checks=[browser])
+            self.assertEqual(parse_verdict(json.dumps(verdict), 'pass', required_checks=[browser]), verdict)
+
+    def test_current_required_checks_hold_clean_and_findings_without_saved_evidence(self):
+        saved = dict(name='browser', result='not_run', details='Browser unavailable')
+        required = dict(name='integration service', result='not_run', scope='review', details='Service unavailable')
+        deferred = dict(name='full regression', result='not_run', scope='merge', details='Pending before merge')
+        finding = dict(id='F2', category='implementation', severity='high', explanation='New defect',
+                       evidence='file:2', requirement='Acceptance')
+        for pending in ([], [saved]):
+            for checks in ([required],
+                           [dict(required, result='passed'), required], [required, dict(required, result='passed')],
+                           [dict(required, result='passed'), dict(required, scope='merge')]):
+                checks = [dict(saved, result='passed'), deferred, *checks]
+                for state in ('clean', 'findings'):
+                    verdict = dict(pass_id='pass', state=state, summary='Current review', checks=checks,
+                                   findings=[finding] if state == 'findings' else [])
+                    with self.subTest(pending=pending, checks=checks, state=state):
+                        if state == 'clean':
+                            with self.assertRaises(TaskError):
+                                parse_verdict(json.dumps(verdict), 'pass', required_checks=pending)
+                        else:
+                            parsed = parse_verdict(json.dumps(verdict), 'pass', required_checks=pending)
+                            self.assertEqual(parsed['state'], 'blocked')
+                            self.assertIn(required['name'], parsed['summary'])
+                            self.assertEqual(parsed['findings'], [finding])
+                            self.assertEqual(parsed['checks'], checks)
+        # The same check can pass independently while the merge deferral remains unrun.
+        checks = [dict(saved, result='passed'), dict(required, result='passed'), deferred]
+        for state in ('clean', 'findings'):
+            verdict = dict(pass_id='pass', state=state, summary='Current review', checks=checks,
+                           findings=[finding] if state == 'findings' else [])
+            self.assertEqual(parse_verdict(json.dumps(verdict), 'pass', required_checks=[saved]), verdict)
+
+    def test_executed_failures_allow_findings_but_require_passing_clean_review(self):
+        finding = dict(id='F1', category='implementation', severity='high', explanation='Code defect',
+                       evidence='code.py:1', requirement='Regression coverage')
+        for scope in (None, 'review', 'merge'):
+            failed = dict(name='focused tests', result='failed', details='Executed tests reproduced the code defect')
+            if scope:
+                failed['scope'] = scope
+            verdict = dict(pass_id='pass', state='findings', summary='Code defect reproduced',
+                           findings=[finding], checks=[failed])
+            with self.subTest(scope=scope):
+                self.assertEqual(parse_verdict(json.dumps(verdict), 'pass', routing=True), verdict)
+                pending = pending_review_checks([dict(phase='review', **verdict)])
+                self.assertEqual(pending, [dict(failed, scope='review')])
+                clean = dict(verdict, state='clean', findings=[])
+                for checks in ([], [failed], [dict(failed, result='not_run', scope='merge')]):
+                    with self.subTest(clean_checks=checks), self.assertRaises(TaskError):
+                        parse_verdict(json.dumps(dict(clean, checks=checks)), 'pass', required_checks=pending)
+                passed = dict(failed, result='passed', details='Independent re-review tests passed')
+                self.assertEqual(parse_verdict(json.dumps(dict(clean, checks=[passed])), 'pass',
+                                              required_checks=pending)['state'], 'clean')
+                self.assertEqual(pending_review_checks([dict(phase='review', **verdict),
+                    dict(phase='rereview', **dict(clean, checks=[passed]))]), [])
+
+    def test_executed_failure_can_continue_findings_after_unavailable_check_runs(self):
+        unavailable = dict(name='browser', result='not_run', scope='review', details='Browser unavailable')
+        failed = dict(unavailable, result='failed', details='Browser ran and reproduced an implementation defect')
+        finding = dict(id='F2', category='implementation', severity='high', explanation='Browser assertion failed',
+                       evidence='code.py:2', requirement='Browser acceptance')
+        verdict = dict(pass_id='pass', state='findings', summary='Code defect reproduced',
+                       findings=[finding], checks=[failed])
+        self.assertEqual(parse_verdict(json.dumps(verdict), 'pass', required_checks=[unavailable]), verdict)
+        history = [dict(phase='review', state='blocked', checks=[unavailable]), dict(phase='rereview', **verdict)]
+        self.assertEqual(pending_review_checks(history), [failed])
+
+    def test_failed_code_check_does_not_bypass_missing_validation_or_human_decisions(self):
+        failed = dict(name='focused tests', result='failed', scope='review', details='Executed tests failed')
+        browser = dict(name='browser', result='not_run', scope='review', details='Browser unavailable')
+        finding = dict(id='F1', category='implementation', severity='high', explanation='Code defect',
+                       evidence='code.py:1', requirement='Acceptance')
+        for pending, checks in (([browser], [failed]), ([], [failed, browser]),
+                                ([], [dict(failed, result='passed'), failed, dict(failed, result='not_run')])):
+            verdict = dict(pass_id='pass', state='findings', summary='Code defect', findings=[finding], checks=checks)
+            with self.subTest(pending=pending, checks=checks):
+                parsed = parse_verdict(json.dumps(verdict), 'pass', required_checks=pending)
+                self.assertEqual(parsed['state'], 'blocked')
+                self.assertEqual(parsed['findings'], verdict['findings'])
+                self.assertEqual(parsed['checks'], checks)
+        verdict = dict(pass_id='pass', state='findings', summary='Human decision required',
+                       findings=[dict(finding, category='human_decision')], checks=[failed])
+        self.assertEqual(parse_verdict(json.dumps(verdict), 'pass', routing=True), verdict)
+
+    def test_check_scopes_and_retry_limitations_are_in_review_handoff(self):
+        prompt = review_handoff(ISSUE, Path('/repo'), self.workspace(), 'main',
+            SimpleNamespace(as_dict=lambda: {}), 'DEV-7-R1', 'resumed', AgentOptions('codex', 'model', 'high'),
+            'pass', Path('/tmp/result.json'), loop_feedback={'pending_checks': []})
+        for text in ('scope to review', 'optional scope (review/merge)',
+                     'even when new findings exist', 'For legacy checks without scope',
+                     'never demote a saved scope=review check', 'summary and publication.validation',
+                     'Executed failing code checks support findings for fixes',
+                     'Unavailable mandatory', 'independent passing evidence is still required before clean review'):
+            self.assertIn(text, prompt)
 
 
 if __name__ == '__main__':

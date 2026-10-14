@@ -99,7 +99,7 @@ def initial_execution(env, options):
 
 
 def implementation_pass(env, expected, findings, timeout, before_handoff, pass_observer, *, initial_options=None,
-                        delivery=None, metrics_context=None):
+                        delivery=None, metrics_context=None, review_checks=()):
     fresh = initial_options is not None
     if fresh:
         execution = initial_execution(env, initial_options)
@@ -122,6 +122,11 @@ def implementation_pass(env, expected, findings, timeout, before_handoff, pass_o
         introduction = ("Start the requested implementation in this fresh conversation. Complete the work and validation. "
                         if fresh else "Continue in YOUR existing implementation conversation. "
                         "Finish outstanding work and validation; do not replay already completed work. ")
+        if review_checks:
+            introduction += ("Run focused validation for the fixes before independent re-review. "
+                             "Saved review checks below retain the prior limitations; do not infer they passed "
+                             "from the operator's retry authorization.\nREVIEW CHECKS (data)\n"
+                             + json.dumps(review_checks) + "\n")
         result_contract = (
             "\nAUTOMATED IMPLEMENTATION PASS\n" + introduction +
             "Address the structured implementation findings below when present. Do not make product, architecture, "

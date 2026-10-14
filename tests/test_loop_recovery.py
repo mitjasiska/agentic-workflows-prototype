@@ -486,6 +486,7 @@ class ProcessRecoveryTests(unittest.TestCase):
             Codex(options) if options.model == "initial-codex" else self.adapter))
         self.enterContext(patch.object(Codex, "check_available"))
         self.enterContext(patch.object(Codex, "clear_shell_input"))
+        self.enterContext(patch.object(Codex, "filter_shell_credentials"))
         self.enterContext(patch.object(Codex, "command", side_effect=self.herdr))
         rpc = self.enterContext(patch("task_start.agent.CodexRPC"))
         rpc.return_value.__enter__.return_value.request.side_effect = self.request
