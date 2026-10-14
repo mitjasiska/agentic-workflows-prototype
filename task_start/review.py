@@ -171,7 +171,7 @@ def finalize_reviewer(context_id, workspace, adapter, registry, identities):
 
 
 def review(identifier: str, *, resume: str | None = None, agent_kind: str | None = None,
-           model: str | None = None, mode: str | None = None, timeout: float = 1800) -> ReviewResult:
+           model: str | None = None, mode: str | None = None, timeout: float = 1800, browser: bool = False) -> ReviewResult:
     if timeout <= 0:
         raise TaskError("Review timeout must be positive")
     if resume is not None:
@@ -190,12 +190,12 @@ def review(identifier: str, *, resume: str | None = None, agent_kind: str | None
                                                                 local_only=True, metrics_context=metrics_context)
     with PublicationStore(workspace.path).locked() as store:
         return review_pass(issue, project, repo, registry, identities, workspace, anchor, base, endpoint,
-                           local, resume, agent_kind, model, mode, timeout, store, metrics_context=metrics_context)
+                           local, resume, agent_kind, model, mode, timeout, store, metrics_context=metrics_context, browser=browser)
 
 
 def review_pass(issue, project, repo, registry, identities, workspace, anchor, base, endpoint,
                 local, resume, agent_kind, model, mode, timeout, store, *, loop_feedback=None,
-                before_handoff=None, pass_observer=None, delivery=None, metrics_context=None):
+                before_handoff=None, pass_observer=None, delivery=None, metrics_context=None, browser=False):
     registry.check_pending_startup(issue.identifier, repo, workspace.path, "review")
     context, pane = (resolve_reviewer(resume, issue, workspace, repo, endpoint, registry, identities)
                      if resume is not None else (None, None))
@@ -311,7 +311,7 @@ def review_pass(issue, project, repo, registry, identities, workspace, anchor, b
                     registry.rebind_review_pane(context, pane)
                 execution = AgentExecution(issue, repo, workspace, options,
                                            handoff(context_id) if context else "Review handoff pending allocation",
-                                           purpose="review", policy=policy)
+                                           purpose="review", policy=dict(policy, browser=browser))
                 if delivery:
                     execution = delivery.attach(execution, add_contract=False)
                 elif standalone:
@@ -327,6 +327,8 @@ def review_pass(issue, project, repo, registry, identities, workspace, anchor, b
                     try:
                         # A stopped agent can restart in its original shell pane. A
                         # new pane binding is needed only for actual pane recreation.
+                        from .browser import prepare_browser
+                        execution = prepare_browser(replace(execution, context_id=context_id), context, registry)
                         launch = adapter.resume_review(execution, reference,
                             recreate=pane["pane_id"] != context["pane_id"] or pane.get("agent") is None)
                     finally:

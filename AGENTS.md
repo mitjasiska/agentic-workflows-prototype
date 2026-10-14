@@ -58,11 +58,14 @@
 
 ## Web tasks
 
-- For web tasks, follow the canonical [browser guide](docs/browser.md). After
-  one-time user setup, invoke `ab-worktree pi` or `ab-worktree codex` from the
-  target checkout. Start the browser only when needed; prefer snapshots,
-  semantic/DOM queries, console and network diagnostics. Screenshots are opt-in
-  for visual/layout checks. Use explicit `--instance ID` for same-worktree isolation.
+- For explicitly browser-enabled tasks, follow the canonical [browser guide](docs/browser.md).
+  The host controller prepares each actor's exact instance before handoff. Use the
+  supplied `ab-worktree AGENT --instance ID --actor ID --connect-only` prefix on
+  every call; never invent an ID or launch Chrome from a sandbox. Internally
+  spawned subagents need distinct stable IDs and separate host preparation from
+  their parent; block their browser use if the framework cannot provide that.
+  Non-browser tasks start no browser. Prefer snapshots, semantic/DOM queries,
+  console and network diagnostics; screenshots are opt-in for visual/layout checks.
 
 ## Validation and handoff
 

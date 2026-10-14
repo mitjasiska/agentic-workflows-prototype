@@ -132,8 +132,9 @@ explicit model and mode in that section or as command flags. The
 [configuration guide](docs/configuration.md) includes examples, option precedence,
 agent compatibility, and optional repository-specific Codex permission profiles.
 For web tasks, optional [on-demand browser setup](docs/browser.md) installs one
-user-level helper for Pi and Codex across worktrees, with lazy browser startup
-and isolated worktree sessions.
+user-level helper for Codex, Pi, and custom shell agents. Explicit `--browser`
+task opt-in prepares isolated actor sessions on the host for connect-only sandbox
+access across worktrees.
 Optional shared and personal
 [project defaults](docs/configuration.md#project-defaults) apply per field from the
 trusted permanent checkout. The old global namespace has no fallback; see the

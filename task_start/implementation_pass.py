@@ -50,7 +50,8 @@ def implementation_target(env, expected=None):
     policy = (codex_repository_policy(env.local.codex_repository_profiles, env.project.repo_name)
               if options.kind == "codex" else {})
     execution = AgentExecution(env.issue, env.repo, workspace, options, "Implementation handoff pending",
-                               policy=policy, runtime_observer=context_observer(env.registry, context["context_id"]))
+                               policy=dict(policy, browser=getattr(env, "browser", False)), context_id=context["context_id"],
+                               runtime_observer=context_observer(env.registry, context["context_id"]))
     if adapter.status(execution, pane["terminal_id"], reference) not in {"idle", "done"}:
         raise TaskError("Implementation is not confirmed idle; let its current turn finish and inspect it")
     return context, adapter, execution, pane, reference
@@ -95,7 +96,7 @@ def initial_execution(env, options):
     policy = (codex_repository_policy(env.local.codex_repository_profiles, env.project.repo_name)
               if options.kind == "codex" else {})
     return AgentExecution(env.issue, env.repo, env.workspace, options, "Initial implementation pending",
-                          policy=dict(policy, session_reporting=True))
+                          policy=dict(policy, session_reporting=True, browser=getattr(env, "browser", False)))
 
 
 def implementation_pass(env, expected, findings, timeout, before_handoff, pass_observer, *, initial_options=None,
@@ -209,6 +210,8 @@ def implementation_pass(env, expected, findings, timeout, before_handoff, pass_o
                     observe_initial()
                 execution = replace(execution, runtime_observer=observe)
             else:
+                from .browser import prepare_browser
+                execution = prepare_browser(execution, context, env.registry)
                 adapter.resume(execution, reference, recreate=False)
             if delivery:
                 delivery.started()

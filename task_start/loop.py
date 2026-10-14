@@ -210,7 +210,7 @@ def new_state(env, reviewer_options, max_reviews, max_passes, timeout, *, from_r
         status="ready", reason="Implementation completion pending", next_phase="implementation", active_pass=None,
         pass_count=0, review_count=0, max_reviews=max_reviews, max_passes=max_passes, timeout=timeout,
         snapshot=snapshot(env.workspace.path, env.base, env.workspace.branch).as_dict(),
-        findings=[], seen=[], records=[], delivery=None)
+        findings=[], seen=[], records=[], delivery=None, browser=getattr(env, "browser", False))
     if initial_options is not None:
         state.update(version=3, initial_phase="initial_implementation", next_phase="initial_implementation",
                      implementation_options=asdict(initial_options), reason="Initial implementation pending")
@@ -306,6 +306,7 @@ class LoopRuntime:
                    (("agent", "kind"), ("model", "model"), ("mode", "mode"))):
                 raise TaskError("Blocked reviewer settings conflict with the saved pass")
         idle_reviewers(env, reviewer, require_observed_idle=require_observed_idle)
+        env.browser = state.get("browser", False)
         self.env = env
         return reviewer
 
@@ -346,7 +347,7 @@ class LoopRuntime:
             options["kind"] if phase == "review" else None,
             options["model"] if phase == "review" else None,
             options["mode"] if phase == "review" else None,
-            state["timeout"], self.publication, loop_feedback=feedback,
+            state["timeout"], self.publication, loop_feedback=feedback, browser=state.get("browser", False),
             before_handoff=before_handoff, pass_observer=pass_observer, delivery=delivery,
             metrics_context=metrics_context)
         self.completed_snapshot = getattr(delivery, "completed_snapshot", None)
@@ -638,7 +639,9 @@ def control_store(identifier, *, optional=False):
 
 def loop(identifier, *, action="run", agent_kind=None, model=None, mode=None,
          max_reviews=None, max_passes=None, timeout=None, from_review=False, on_pass_result=None,
-         impl_agent_kind=None, impl_model=None, impl_mode=None):
+         impl_agent_kind=None, impl_model=None, impl_mode=None, browser=False):
+    if browser and action not in {"run", "new"}:
+        raise TaskError("--browser opts in a new loop; controls preserve the saved capability")
     implementation_overrides = (impl_agent_kind, impl_model, impl_mode)
     overrides = (agent_kind, model, mode, max_reviews, max_passes, timeout, *implementation_overrides)
     if action not in {"run", "new", "continue", "retry-review", "extend", "pause", "status", "abort"}:
@@ -671,11 +674,11 @@ def loop(identifier, *, action="run", agent_kind=None, model=None, mode=None,
     return _loop(identifier, action=action, agent_kind=agent_kind, model=model, mode=mode,
                  max_reviews=max_reviews, max_passes=max_passes, timeout=timeout,
                  from_review=from_review, on_pass_result=on_pass_result,
-                 impl_agent_kind=impl_agent_kind, impl_model=impl_model, impl_mode=impl_mode)
+                 impl_agent_kind=impl_agent_kind, impl_model=impl_model, impl_mode=impl_mode, browser=browser)
 
 
 def _loop(identifier, *, action, agent_kind, model, mode, max_reviews, max_passes, timeout,
-          from_review, on_pass_result, impl_agent_kind, impl_model, impl_mode):
+          from_review, on_pass_result, impl_agent_kind, impl_model, impl_mode, browser=False):
     if action in {"pause", "status", "continue", "retry-review", "extend"}:
         with ownership_gate():
             store, path = control_store(identifier)
@@ -724,6 +727,8 @@ def _loop(identifier, *, action, agent_kind, model, mode, max_reviews, max_passe
         store, path = existing
         with PublicationStore(path).locked() as publication:
             state, _ = store.read()
+            if browser and not state.get("browser", False):
+                raise TaskError("Existing loop did not opt in to browser access; use an explicitly authorized new loop")
             if state["status"] == "aborted":
                 return report(*store.read())
             if state["status"] == "aborting":
@@ -806,6 +811,7 @@ def _loop(identifier, *, action, agent_kind, model, mode, max_reviews, max_passe
     env = environment(identifier, allow_bootstrap=not from_review,
                       pending_implementation=reservation["implementation"]["context_id"] if reservation else None)
     global_settings = env.local
+    env.browser = browser
     env.local = project_settings(global_settings, env.repo)
     timeout = env.local.loop_timeout if timeout is None else timeout
     if env.workspace is not None:

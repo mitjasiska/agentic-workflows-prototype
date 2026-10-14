@@ -289,6 +289,16 @@ class BootstrapLoopTests(unittest.TestCase):
         self.assertEqual(self.launches, [])
         return result
 
+    def test_browser_from_scratch_prepares_implementation_and_reviewer_before_delivery(self):
+        import browser_handoff_fixture
+        calls = browser_handoff_fixture.install(self)
+        result = self.run_loop(browser=True)
+        self.assertEqual(result.state, 'clean', result.render())
+        self.assertEqual([c[0] for c in calls], ['DEV-7-I1', 'DEV-7-R1'])
+        self.assertTrue(self.store.read()[0]['browser'])
+        self.assertIn('--instance DEV-7-I1 --actor DEV-7-I1 --connect-only', self.impl_prompts[0])
+        self.assertIn('--instance DEV-7-R1 --actor DEV-7-R1 --connect-only', self.prompts[0])
+
     def test_dev75_shell_response_recovers_503_reservation_once_with_saved_settings(self):
         failed = self.fail_before_launch(max_reviews=2, max_passes=4, impl_model='saved-model')
         self.assertIn('task loop DEV-7', failed.render())

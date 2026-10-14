@@ -20,6 +20,19 @@ arguments.
 The existing transport compatibility evidence covers Herdr 0.9.1, Codex CLI
 0.157.1, and Pi CLI 0.87.1; it is not new live validation of packaging.
 
+### Optional browser setup
+
+Run `python3.12 scripts/install_browser.py` from a stable AWL checkout for guided
+user-level prerequisites and helper installation. Downloads require consent;
+custom shortcuts, personal instructions and browser configurations are preserved.
+Use `awl start ISSUE --browser`, `awl loop ISSUE --browser`, or
+`awl review ISSUE --browser` only for explicitly browser-enabled tasks. The host
+prepares each allocated actor's exact instance before handoff; agents use the
+supplied connect-only command. This capability is per execution, not inferred
+from project mappings or enabled by repository-wide defaults. Normal AWL users
+need no Node, Chrome, or browser daemon. See the [browser guide](browser.md) for
+PATH checks, supported versions, subagent identity, runtime permissions and recovery.
+
 ### Private registry selection
 
 | Mode | Registry location |

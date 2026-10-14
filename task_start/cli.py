@@ -130,6 +130,9 @@ def parser(prog: str = "task") -> argparse.ArgumentParser:
     add_agent_options(integration)
     integration.add_argument("--timeout", type=int, metavar="SECONDS", help="Agent completion timeout (default 1800)")
     integration.add_argument("--abandon", metavar="CONTEXT", help="Explicitly abandon a stopped uncertain sessionless Codex G context; retain all evidence, launch nothing")
+    for command in (start, review_command, loop_command):
+        command.add_argument("--browser", action="store_true",
+                             help="Explicitly prepare an isolated host browser for each task actor before handoff")
     for command in (start, review_command, loop_command, integration):
         command.epilog = ("If Codex pauses for recognized trust/setup, handle it in the indicated pane, "
                           "then press Enter in this original command to reconcile the same launch. "
@@ -162,7 +165,9 @@ def parse_slice(value: str) -> str:
 
 def start(identifier: str, *, no_agent: bool = False, slice: str | None = None,
           agent_kind: str | None = None, model: str | None = None,
-          mode: str | None = None) -> str:
+          mode: str | None = None, browser: bool = False) -> str:
+    if no_agent and browser:
+        raise TaskError("--browser requires an execution agent; it conflicts with --no-agent")
     if slice is not None:
         slice = slice_slug(slice)
     overrides = AgentOverrides(agent_kind, model, mode)
@@ -195,7 +200,7 @@ def start(identifier: str, *, no_agent: bool = False, slice: str | None = None,
                       if options.kind == "codex" else {})
             execution = AgentExecution(issue, repo, workspace, options,
                                        implementation_handoff(issue, workspace, assessment=local.task_assessment,
-                                                              scope=local.implementation_scope), policy=policy)
+                                                              scope=local.implementation_scope), policy=dict(policy, browser=True) if browser else policy)
             with observe_run() as metric:
                 metric.start(ContextRegistry(), issue, options, "implementation")
                 launched = launch_registered(agent, execution)
@@ -418,7 +423,7 @@ def _main(argv: list[str] | None, *, prog: str) -> int:
             serve_dashboard(port=args.port, trusted_origin=args.trusted_origin)
         elif args.command == "review":
             result = review(args.issue, resume=args.resume, agent_kind=args.agent_kind,
-                            model=args.model, mode=args.mode, timeout=args.timeout)
+                            model=args.model, mode=args.mode, timeout=args.timeout, browser=args.browser)
             print(json.dumps(result.as_dict(), ensure_ascii=True) if args.json else result.render())
             return {"clean": 0, "findings": 2, "blocked": 3, "failed": 1}[result.state]
         elif args.command == "loop":
@@ -431,7 +436,7 @@ def _main(argv: list[str] | None, *, prog: str) -> int:
                 result = loop(args.issue, action=args.action, agent_kind=args.r_agent_kind, model=args.r_model,
                               mode=args.r_mode, max_reviews=args.max_reviews, max_passes=args.max_passes,
                               timeout=args.timeout, from_review=args.from_review,
-                              impl_agent_kind=args.i_agent_kind, impl_model=args.i_model, impl_mode=args.i_mode)
+                              impl_agent_kind=args.i_agent_kind, impl_model=args.i_model, impl_mode=args.i_mode, browser=args.browser)
             finally:
                 for sig, handler in previous.items():
                     signal.signal(sig, handler)
@@ -457,7 +462,7 @@ def _main(argv: list[str] | None, *, prog: str) -> int:
                 signal.signal(signal.SIGTERM, previous)
         else:
             print(start(args.issue, no_agent=args.no_agent, slice=args.slice,
-                        agent_kind=args.agent_kind, model=args.model, mode=args.mode))
+                        agent_kind=args.agent_kind, model=args.model, mode=args.mode, browser=args.browser))
     except TaskError as error:
         print(f"{prog}: {error}", file=sys.stderr)
         return 1

@@ -200,6 +200,10 @@ def validate_checkpoint(state):
     fields = {"version", "run_id", "binding", "requirements", "implementation", "reviewer",
               "reviewer_options", "status", "reason", "next_phase", "active_pass", "pass_count",
               "review_count", "max_reviews", "max_passes", "timeout", "snapshot", "findings", "seen", "records"}
+    if "browser" in state:
+        fields.add("browser")
+        if type(state["browser"]) is not bool:
+            raise ValueError("invalid browser opt-in")
     initial_phase = "implementation"  # Version 1 always starts with completion.
     abandoned = state.get("abandonment")
     if abandoned is not None:

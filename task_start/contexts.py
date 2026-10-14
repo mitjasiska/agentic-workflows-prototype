@@ -80,7 +80,7 @@ class ContextRegistry:
                     # schema (or completed migration) even when that claim rolls back.
                     db.commit()
                     db.execute("BEGIN IMMEDIATE")
-                elif version not in {2, 3}:
+                elif version not in {2, 3, 4}:
                     raise TaskError("Unsupported workflow context registry version")
                 if version in {0, 1, 2}:
                     # Contextless workspaces can still have disposal journals.
@@ -89,10 +89,15 @@ class ContextRegistry:
                     db.execute("PRAGMA user_version = 3")
                     db.commit()
                     db.execute("BEGIN IMMEDIATE")
+                if version in {0, 1, 2, 3}:
+                    db.execute("CREATE TABLE IF NOT EXISTS browser_contexts (context_id TEXT PRIMARY KEY REFERENCES contexts(context_id), runtime_dir TEXT NOT NULL)")
+                    db.execute("PRAGMA user_version = 4")
+                    db.commit()
+                    db.execute("BEGIN IMMEDIATE")
             else:
                 # mode=ro neither creates the file nor migrates/repairs the registry.
                 db = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
-                if db.execute("PRAGMA user_version").fetchone()[0] not in {1, 2, 3}:
+                if db.execute("PRAGMA user_version").fetchone()[0] not in {1, 2, 3, 4}:
                     raise TaskError("Unsupported workflow context registry version")
             db.row_factory = sqlite3.Row
             yield db
@@ -221,6 +226,33 @@ class ContextRegistry:
                                 (*values.values(), context_id))
             if result.rowcount != 1:
                 raise TaskError(f"Context {context_id} is absent or retired; mapping was not changed")
+
+    def browser_enabled(self, context_id: str) -> bool:
+        return self.browser_runtime(context_id) is not None
+
+    def browser_runtime(self, context_id: str) -> str | None:
+        """Keep capability metadata separate from frozen context rows in journals."""
+        if not self.path.exists():
+            return None
+        with self.connection() as db:
+            if db.execute("PRAGMA user_version").fetchone()[0] < 4:
+                return None
+            row = db.execute("SELECT runtime_dir FROM browser_contexts WHERE context_id=?", (context_id,)).fetchone()
+            return row[0] if row else None
+
+    def enable_browser(self, context_id: str, runtime_dir: str) -> None:
+        if not isinstance(runtime_dir, str) or not Path(runtime_dir).is_absolute():
+            raise TaskError("Browser runtime requires an absolute path")
+        context = self.get(context_id)
+        with self.claim_connection(context["repository"], context["worktree"], endpoint=context["endpoint"],
+                                   workspace_id=context["workspace_id"], terminal_id=context["terminal_id"]) as db:
+            current = db.execute("SELECT * FROM contexts WHERE context_id=?", (context_id,)).fetchone()
+            if current is None or dict(current) != context or context["retired_at"] is not None:
+                raise TaskError("Browser actor changed or retired before opt-in")
+            previous = db.execute("SELECT runtime_dir FROM browser_contexts WHERE context_id=?", (context_id,)).fetchone()
+            if previous and previous[0] != runtime_dir:
+                raise TaskError("Browser runtime directory changed for this actor; use its original assignment")
+            db.execute("INSERT OR IGNORE INTO browser_contexts VALUES (?, ?)", (context_id, runtime_dir))
 
     def list(self, issue: str | None = None, *, include_retired: bool = False) -> list[dict]:
         if not self.path.exists():
@@ -593,6 +625,8 @@ def launch_allocated(adapter, execution, context_id, registry, herdr, *, handoff
         if handoff_factory is not None:
             execution = replace(execution, handoff=handoff_factory(context_id))
         herdr.label(pane, context_id)
+        from .browser import prepare_browser
+        execution = prepare_browser(replace(execution, context_id=context_id), context, registry)
         result = adapter.launch(replace(execution, runtime_observer=record, context_id=context_id))
         if result.kind != execution.options.kind or result.pane_id != workspace.pane_id:
             raise TaskError("Execution result does not match the allocated workflow context")

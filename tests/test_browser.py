@@ -26,6 +26,7 @@ class BrowserFixture:
         browser = self.bin / "agent-browser"
         browser.write_text(f"#!{sys.executable}\n"
                            "import json, os, sys\n"
+                           "if sys.argv[1:] == ['--version']: print('agent-browser 0.39.0'); sys.exit(0)\n"
                            "record = {'args': sys.argv[1:], 'cwd': os.getcwd()}\n"
                            "if os.environ.get('BROWSER_TEST_READ_STDIN'):\n"
                            "    record['stdin'] = sys.stdin.read()\n"
@@ -38,7 +39,7 @@ class BrowserFixture:
         # Avoid personal Git configuration and browser/session environment state.
         self.env = dict(PATH=f"{self.bin}:/usr/bin:/bin", HOME=str(self.base / "home"),
                         GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
-                        BROWSER_TEST_LOG=str(self.log))
+                        BROWSER_TEST_LOG=str(self.log), AGENT_BROWSER_EXECUTABLE_PATH=str(browser))
         self.repo = self.base / "repo with spaces"
         self.repo.mkdir()
         self.git("init", "-q", cwd=self.repo)
@@ -152,8 +153,10 @@ class BrowserTests(BrowserFixture, unittest.TestCase):
         self.assertEqual(len(self.records()), 1)
 
     def test_invalid_agent_instance_and_session_overrides_never_call_browser(self):
-        cases = [[], ["other", "snapshot"], ["pi"], ["pi", "--instance"],
+        cases = [[], ["Invalid", "snapshot"], ["pi"], ["pi", "--instance"],
                  ["pi", "--instance", "ok"], ["pi", "snapshot", "--instance", "late"],
+                 ["pi", "--instance", "a", "--instance", "b", "snapshot"],
+                 ["pi", "--actor", "a", "--actor", "a", "snapshot"],
                  ["codex", "--instance=bad", "snapshot"],
                  ["pi", "--session", "shared", "snapshot"],
                  ["pi", "snapshot", "--session=shared"],
@@ -383,7 +386,7 @@ class BrowserInstallationTests(BrowserFixture, unittest.TestCase):
         alias.symlink_to(self.codex_home, target_is_directory=True)
         result = self.install("--pi-home", str(alias))
         self.assertEqual(result.returncode, 1)
-        self.assertIn("destinations must differ", result.stderr)
+        self.assertIn("symlinked destination directory", result.stderr)
         self.assertFalse(self.installed_bin.exists())
 
     def test_pi_override_preserves_lower_priority_rules_and_explicit_homes_win(self):
