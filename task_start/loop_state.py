@@ -14,7 +14,7 @@ from uuid import UUID
 
 from . import TaskError
 from .ownership import ownership_gate
-from .review_result import finding_signature, parse_verdict, unique_object
+from .review_result import finding_signature, parse_verdict, pending_review_checks, unique_object
 from .sessions import has_immutable_identity
 from .task_assessment import validate_assessment
 from .pass_delivery import validate_delivery
@@ -23,6 +23,121 @@ from .workspace import Git
 
 PHASES = {"initial_implementation", "implementation", "review", "fixes", "rereview"}
 STATES = {"ready", "running", "paused", "clean", "escalated", "interrupted", "aborting", "aborted"}
+BUDGET_STOP_REASON = "Autonomous pass/review limit reached; human inspection required"
+
+
+def _budget_exhausted_boundary(state):
+    """Prove pending work at a budget stop, without authorizing its continuation.
+
+    Legacy checkpoints can prove pending corrections without the full continuity
+    evidence needed to extend. Their findings must still survive review-first
+    replacement attempts.
+    """
+    phase = state["next_phase"]
+    if (state["status"] != "escalated" or state["reason"] != BUDGET_STOP_REASON
+            or phase not in {"review", "fixes", "rereview"} or not state["records"]
+            or state["active_pass"] is not None):
+        raise TaskError("--extend requires a proven budget-exhaustion boundary in the current run; inspect --status")
+    validate_checkpoint(state)
+    if state.get("delivery") is not None:
+        raise TaskError("Budget extension requires completed delivery evidence; reconcile retained delivery with the ordinary loop command")
+    if state["pass_count"] < state["max_passes"] and state["review_count"] < state["max_reviews"]:
+        raise TaskError("Saved pass/review budget is not exhausted; use the ordinary loop command for authorized recovery")
+    # The schema checks ordered phases, counts and context IDs. Also validate the
+    # structured outcomes, pending feedback and non-progress/human-stop rules.
+    from .implementation_pass import parse_implementation
+    findings, seen, previous = [], [], []
+    for record in state["records"]:
+        if record["phase"] in {"review", "rereview"}:
+            verdict = parse_verdict(json.dumps({k: record[k] for k in
+                ("pass_id", "state", "summary", "findings", "checks")}), record["pass_id"],
+                routing=True, required_checks=pending_review_checks(previous))
+            if verdict["state"] != "findings" or record["resolutions"]:
+                # A previously authorized blocked review is retained as history;
+                # its external checks must be cleared by subsequent review.
+                if record.get("continuation") is None or record is state["records"][-1]:
+                    raise TaskError("Saved review is blocked or terminal, not solely budget-exhausted; inspect --retry-review and human blockers")
+            if any(f["category"] != "implementation" for f in verdict["findings"]):
+                raise TaskError("Saved review requires a human decision; --extend cannot authorize it")
+            ids = sorted(f["id"] for f in verdict["findings"])
+            signature = finding_signature(verdict["findings"])
+            if verdict["state"] == "findings" and (
+                    any(s["ids"] == ids or s["signature"] == signature for s in seen)
+                    or findings and {f["id"] for f in findings} <= set(ids)):
+                raise TaskError("Review findings made no structured progress; this is not a budget-only stop")
+            if ids:
+                seen.append(dict(ids=ids, signature=signature))
+            findings = verdict["findings"]
+        else:
+            fields = ("pass_id", "state", "summary", "checks", "resolutions")
+            value = {k: record[k] for k in fields}
+            if "task_assessment" in record:
+                value["task_assessment"] = record["task_assessment"]
+            parse_implementation(json.dumps(value), record["pass_id"], findings,
+                                 assessment_enabled="task_assessment" in record)
+            if record["state"] != "completed" or record["findings"]:
+                raise TaskError("Implementation did not complete; --extend cannot bypass its blocker")
+        previous.append(record)
+    if state["findings"] != findings or state["seen"] != seen:
+        raise TaskError("Saved findings/progress evidence conflicts; no budget extension is safe")
+    return phase
+
+
+def budget_exhausted_phase(state):
+    """Require saved continuity evidence before offering or authorizing extension.
+
+    Runtime, requirements and Git identity still need controller verification.
+    Never reconstruct missing delivery/session history or a replaced predecessor.
+    """
+    phase = _budget_exhausted_boundary(state)
+    if "delivery" not in state:
+        raise TaskError("Budget extension requires completed delivery evidence; reconcile retained delivery with the ordinary loop command")
+    if state["reviewer"] is not None and set(state["reviewer"]) == {"context_id"}:
+        raise TaskError("Budget extension lacks the saved reviewer conversation; no replacement or historical reconstruction is allowed")
+    if ((state["reviewer"] is None) != (state["review_count"] == 0)
+            or state["reviewer"] and any(state["reviewer"][k] != state["reviewer_options"][o]
+                for k, o in (("agent", "kind"), ("model", "model"), ("mode", "mode")))):
+        raise TaskError("Saved reviewer history/settings conflict; no replacement is allowed")
+    return phase
+
+
+def extension_limits(state, max_passes=None, max_reviews=None):
+    phase = budget_exhausted_phase(state)
+    passes = state["max_passes"] if max_passes is None else max_passes
+    reviews = state["max_reviews"] if max_reviews is None else max_reviews
+    if (type(passes) is not int or type(reviews) is not int
+            or not state["max_passes"] <= passes <= 40 or not state["max_reviews"] <= reviews <= 20
+            or (passes, reviews) == (state["max_passes"], state["max_reviews"])):
+        raise TaskError("--extend requires an explicit increase to --max-passes (up to 40) and/or --max-reviews (up to 20); neither may decrease")
+    if passes < state["pass_count"] + (2 if phase == "fixes" else 1) or reviews <= state["review_count"]:
+        raise TaskError("Extended limits must cover the pending handoff and subsequent independent review")
+    return passes, reviews
+
+
+def extension_guidance(state):
+    """Shared conditional report/status suggestion, not runtime authorization."""
+    from .command import command_name
+    budget_exhausted_phase(state)
+    passes, reviews = min(40, state["max_passes"] + 4), min(20, state["max_reviews"] + 2)
+    try:
+        extension_limits(state, passes, reviews)
+    except TaskError:
+        return dict(command=None, message="Budget exhausted; --extend cannot provide enough capacity within 40 passes/20 reviews. Inspect the pending boundary and findings.")
+    command = f"{command_name()} loop {state['binding']['issue']} --extend --max-passes {passes} --max-reviews {reviews}"
+    reviewer = state["reviewer"]["context_id"] if state["reviewer"] else "the pending first review"
+    return dict(command=command, message=(
+        f"After inspection, try {command}. This preserves {state['implementation']['context_id']} / {reviewer}, "
+        "counted passes and unresolved findings. Checkout, requirements and idle/resumable sessions must still verify. "
+        "--new --from-review creates a fresh reviewer and omits prior findings; it cannot skip pending fixes."))
+
+
+def guard_review_first_replacement(state):
+    try:
+        phase = _budget_exhausted_boundary(state)
+    except TaskError:
+        return
+    if phase == "fixes":
+        raise TaskError("--new --from-review would skip the required implementation correction and omit prior findings in a fresh reviewer; use --extend with increased bounds to preserve the original implementation/reviewer")
 
 
 def preserve_blocked_review(state):
@@ -333,6 +448,8 @@ class LoopStore:
                 if not replace:
                     raise TaskError("A loop checkpoint already exists; use --status, --continue for a pause, "
                                     "or explicitly --new after inspecting the previous run")
+                if state.get("initial_phase") == "review":
+                    guard_review_first_replacement(old)
                 if preserve_blocked_review(old):
                     raise TaskError("Blocked review evidence cannot be replaced with --new; inspect --status, "
                                     "then use --retry-review only at a completed blocked review boundary")
@@ -397,9 +514,13 @@ class LoopStore:
                 blocked_retry = blocked_review_retry(state)
             except TaskError:
                 blocked_retry = None
+            try:
+                exhausted = budget_exhausted_phase(state)
+            except TaskError:
+                exhausted = None
             if (state["status"] in {"ready", "running", "paused"} or state.get("delivery")
                     and state["active_pass"] is not None or startup_recovery_blocker(state) is None
-                    or unclaimed_existing_boundary(state) or blocked_retry):
+                    or unclaimed_existing_boundary(state) or blocked_retry or exhausted):
                 db.execute("UPDATE checkpoint SET pause=1 WHERE id=1")
         return self.read()
 
@@ -430,6 +551,19 @@ class LoopStore:
             state.update(status="paused" if pause else "ready", next_phase=phase,
                          findings=state["records"][-1]["findings"],
                          reason="Explicit blocked review retry authorized; prior validation limitations remain outstanding")
+            validate_checkpoint(state)
+            db.execute("UPDATE checkpoint SET payload=? WHERE id=1", (json.dumps(state),))
+        return state
+
+    def extend(self, expected, max_passes, max_reviews):
+        """Compare and authorize under the controller lock; preserve racing pause intent."""
+        with self.connection(write=True) as db:
+            state, pause = self.decode(db.execute("SELECT payload, pause FROM checkpoint WHERE id=1").fetchone())
+            if state != expected:
+                raise TaskError("Budget-exhaustion checkpoint changed; nothing was extended")
+            passes, reviews = extension_limits(state, max_passes, max_reviews)
+            state.update(max_passes=passes, max_reviews=reviews, status="paused" if pause else "ready",
+                         reason="Explicit budget extension authorized; original pending boundary retained")
             validate_checkpoint(state)
             db.execute("UPDATE checkpoint SET payload=? WHERE id=1", (json.dumps(state),))
         return state
