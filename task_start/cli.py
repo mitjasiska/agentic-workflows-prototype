@@ -101,10 +101,12 @@ def parser(prog: str = "task") -> argparse.ArgumentParser:
                           help="Request a sticky pause at the next handoff boundary")
     controls.add_argument("--continue", dest="action", action="store_const", const="continue",
                           help="Explicitly continue the exact paused boundary")
+    controls.add_argument("--retry-review", dest="action", action="store_const", const="retry-review",
+                          help="After resolving external blockers, continue a completed blocked review using saved findings/checks")
     controls.add_argument("--status", dest="action", action="store_const", const="status",
                           help="Inspect checkpoint without resuming or contacting Linear")
     controls.add_argument("--new", dest="action", action="store_const", const="new",
-                          help="Explicitly replace a stopped loop after inspection, with a fresh reviewer")
+                          help="Explicitly replace a stopped loop after inspection, with a fresh reviewer; blocked reviews require --retry-review")
     controls.add_argument("--abort", dest="action", action="store_const", const="abort",
                           help="Abandon an unfinished pass after Linux registered-execution checks, preserving checkout and session history; Ctrl+C alone does not abort")
     loop_command.set_defaults(action="run")

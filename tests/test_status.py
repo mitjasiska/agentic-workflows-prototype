@@ -49,6 +49,31 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(len(result['tasks']), 1, result)
         return result['tasks'][0]
 
+    def test_completed_blocked_review_suggests_explicit_retry_and_keeps_limitations(self):
+        from test_loop_blocked import blocked, PASSED_BROWSER
+        from task_start.loop import loop
+        self.review_results = [blocked(loops.finding())]
+        result = self.run_loop()
+        before = self.store.read()
+        task = self.detail()
+        self.assertEqual(task['state'], 'escalated')
+        self.assertEqual(task['guidance']['kind'], 'retry_review')
+        self.assertEqual(task['guidance']['command'], 'task loop DEV-7 --retry-review')
+        self.assertIn('external review blocker', task['guidance']['message'])
+        self.assertIn('real browser: not_run', result.render())
+        self.assertEqual(self.store.read(), before)
+        self.review_results = [dict(checks=[PASSED_BROWSER])]
+        self.assertEqual(loop('DEV-7', action='retry-review').state, 'clean')
+        self.assertEqual(self.detail()['review']['acceptance'], 'valid')
+
+    def test_blocked_human_decision_does_not_offer_retry_guidance(self):
+        from test_loop_blocked import blocked
+        self.review_results = [blocked(loops.finding(category='human_decision'))]
+        self.run_loop()
+        task = self.detail()
+        self.assertEqual(task['guidance']['kind'], 'inspect')
+        self.assertIsNone(task['guidance']['command'])
+
     def test_implementation_and_project_identity_ignore_labels(self):
         task = self.detail()
         self.assertEqual(task['state'], 'implementation', task)

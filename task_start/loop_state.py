@@ -14,7 +14,7 @@ from uuid import UUID
 
 from . import TaskError
 from .ownership import ownership_gate
-from .review_result import unique_object
+from .review_result import finding_signature, parse_verdict, unique_object
 from .sessions import has_immutable_identity
 from .task_assessment import validate_assessment
 from .pass_delivery import validate_delivery
@@ -23,6 +23,44 @@ from .workspace import Git
 
 PHASES = {"initial_implementation", "implementation", "review", "fixes", "rereview"}
 STATES = {"ready", "running", "paused", "clean", "escalated", "interrupted", "aborting", "aborted"}
+
+
+def preserve_blocked_review(state):
+    """Do not discard outstanding blocked-review evidence through --new."""
+    return state["status"] not in {"clean", "aborted"} and any(
+        r["phase"] in {"review", "rereview"} and r["state"] == "blocked" for r in state["records"])
+
+
+def blocked_review_phase(record):
+    """Validate saved structured evidence before granting a new handoff boundary."""
+    if record["phase"] not in {"review", "rereview"} or record["state"] != "blocked":
+        raise TaskError("Only a completed blocked review can retry")
+    parse_verdict(json.dumps({k: record[k] for k in ("pass_id", "state", "summary", "findings", "checks")}),
+                  record["pass_id"], routing=True)
+    if record["resolutions"] or not record["context_id"] or not record["pass_id"]:
+        raise TaskError("Blocked review lacks a completed reviewer identity")
+    if any(f["category"] != "implementation" for f in record["findings"]):
+        raise TaskError("Blocked review requires a human decision; no implementation fixes can be routed")
+    return "fixes" if record["findings"] else "rereview"
+
+
+def blocked_review_retry(state):
+    """Pure eligibility check; runtime identity and checkout are rechecked by the controller."""
+    if (state["status"] not in {"escalated", "interrupted"} or state["active_pass"] is not None
+            or state["next_phase"] is not None or not state["records"]):
+        raise TaskError("Only a completed blocked review can retry; inspect active or already continued work")
+    if state.get("delivery"):
+        raise TaskError("Retained delivery must be reconciled with the ordinary loop command before --retry-review")
+    record = state["records"][-1]
+    phase = blocked_review_phase(record)
+    if "continuation" in record:
+        raise TaskError("Blocked review was already continued; use the ordinary loop command to reconcile it")
+    if ("delivery" not in state or state["reviewer"] is None
+            or state["reviewer"]["context_id"] != record["context_id"]):
+        raise TaskError("Blocked review lacks completed delivery/context evidence; inspect before recovery")
+    if state["review_count"] >= state["max_reviews"] or state["pass_count"] + (2 if phase == "fixes" else 1) > state["max_passes"]:
+        raise TaskError("Saved pass/review limits do not permit blocked review continuation and independent re-review")
+    return phase
 
 
 def startup_recovery_blocker(state):
@@ -135,6 +173,11 @@ def validate_checkpoint(state):
     ids = set()
     for index, record in enumerate(records):
         record_fields = {"phase", "pass_id", "context_id", "state", "summary", "findings", "checks", "resolutions"}
+        continuation = record.get("continuation")
+        if "continuation" in record:
+            record_fields.add("continuation")
+            if continuation != blocked_review_phase(record):
+                raise ValueError("invalid blocked review continuation")
         if "task_assessment" in record and next_phase in {"initial_implementation", "implementation", "fixes"}:
             record_fields.add("task_assessment")
             validate_assessment(record["task_assessment"], record["state"])
@@ -163,7 +206,7 @@ def validate_checkpoint(state):
                     raise ValueError("missing reviewer outside terminal setup failure")
             elif record["context_id"] != state["reviewer"]["context_id"]:
                 raise ValueError("reviewer changed")
-            next_phase = "fixes" if record["state"] == "findings" else None
+            next_phase = continuation or ("fixes" if record["state"] == "findings" else None)
     counted = active or (abandoned["claim"] if abandoned else None)
     if state["review_count"] != reviews + bool(counted and counted["phase"] in {"review", "rereview"}):
         raise ValueError("missing review evidence")
@@ -173,8 +216,14 @@ def validate_checkpoint(state):
             or records and state["next_phase"] is not None):
         if state["next_phase"] != next_phase:
             raise ValueError("completed work would be replayed")
-        if next_phase in {"fixes", "rereview"} and (not state["findings"] or state["reviewer"] is None):
+        validation_retry = (records and records[-1].get("continuation") == "rereview")
+        if next_phase in {"fixes", "rereview"} and (state["reviewer"] is None
+                or not state["findings"] and not validation_retry):
             raise ValueError("missing feedback or reviewer")
+        latest_review = next((r for r in reversed(records) if r["phase"] in {"review", "rereview"}), None)
+        if (latest_review and latest_review.get("continuation")
+                and state["findings"] != latest_review["findings"]):
+            raise ValueError("blocked review feedback changed")
     if state["status"] == "clean" and (active is not None or state["next_phase"] is not None
             or not records or records[-1]["state"] != "clean"):
         raise ValueError("unproven clean boundary")
@@ -284,6 +333,9 @@ class LoopStore:
                 if not replace:
                     raise TaskError("A loop checkpoint already exists; use --status, --continue for a pause, "
                                     "or explicitly --new after inspecting the previous run")
+                if preserve_blocked_review(old):
+                    raise TaskError("Blocked review evidence cannot be replaced with --new; inspect --status, "
+                                    "then use --retry-review only at a completed blocked review boundary")
                 if old["status"] in {"ready", "running", "aborting"} or old["active_pass"] is not None or old.get("delivery"):
                     raise TaskError("An unfinished handoff exists; inspect its contexts before replacing the checkpoint")
                 if old["status"] == "aborted" and self.abort_journal(old["run_id"]) is None:
@@ -341,9 +393,13 @@ class LoopStore:
             state, _ = self.decode(db.execute("SELECT payload, pause FROM checkpoint WHERE id=1").fetchone())
             # Recovery retains escalated state during preflight. Record pause
             # intent there without making the boundary resumable before proof.
+            try:
+                blocked_retry = blocked_review_retry(state)
+            except TaskError:
+                blocked_retry = None
             if (state["status"] in {"ready", "running", "paused"} or state.get("delivery")
                     and state["active_pass"] is not None or startup_recovery_blocker(state) is None
-                    or unclaimed_existing_boundary(state)):
+                    or unclaimed_existing_boundary(state) or blocked_retry):
                 db.execute("UPDATE checkpoint SET pause=1 WHERE id=1")
         return self.read()
 
@@ -354,6 +410,28 @@ class LoopStore:
                 raise TaskError("Only a paused boundary can continue; interrupted/unfinished handoffs require inspection")
             state.update(status="ready", reason="Explicit continuation requested")
             db.execute("UPDATE checkpoint SET payload=?, pause=0 WHERE id=1", (json.dumps(state),))
+        return state
+
+    def retry_review(self, expected, reviewer):
+        """Authorize once under the controller lock, retaining a concurrent pause."""
+        with self.connection(write=True) as db:
+            state, pause = self.decode(db.execute("SELECT payload, pause FROM checkpoint WHERE id=1").fetchone())
+            if state != expected:
+                raise TaskError("Blocked review checkpoint changed; nothing was continued")
+            phase = blocked_review_retry(state)
+            if (reviewer["context_id"] != state["reviewer"]["context_id"]
+                    or len(state["reviewer"]) > 1 and reviewer != state["reviewer"]):
+                raise TaskError("Blocked reviewer identity changed; nothing was continued")
+            state["reviewer"] = reviewer
+            state["records"][-1]["continuation"] = phase
+            if phase == "fixes":
+                state["seen"].append(dict(ids=sorted(f["id"] for f in state["records"][-1]["findings"]),
+                                          signature=finding_signature(state["records"][-1]["findings"])))
+            state.update(status="paused" if pause else "ready", next_phase=phase,
+                         findings=state["records"][-1]["findings"],
+                         reason="Explicit blocked review retry authorized; prior validation limitations remain outstanding")
+            validate_checkpoint(state)
+            db.execute("UPDATE checkpoint SET payload=? WHERE id=1", (json.dumps(state),))
         return state
 
     def restart_initial(self, expected):

@@ -395,7 +395,8 @@ def review_pass(issue, project, repo, registry, identities, workspace, anchor, b
                             continue
                         verdict = parse_verdict(raw, pass_id,
                                                 frozen_fingerprint=frozen_fingerprint, identifier=issue.identifier,
-                                                routing=loop_feedback is not None)
+                                                routing=loop_feedback is not None,
+                                                required_checks=(loop_feedback or {}).get("pending_checks", []))
                         state, summary = verdict["state"], verdict["summary"]
                         break
                     # Herdr may infer idle from process/title detection even while Pi

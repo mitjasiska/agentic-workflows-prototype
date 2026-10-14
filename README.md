@@ -325,6 +325,14 @@ The current pass finishes; the next handoff waits for explicit `--continue`.
 `--status` only inspects, including whether the pass warning threshold is exceeded.
 Ctrl+C stops the waiting controller, not necessarily the agent turn; ordinary
 `awl loop DEV-7` reconciles it, while `--continue` remains exclusive to pauses.
+
+After fixing an external prerequisite for a completed blocked review, run
+`awl loop DEV-7 --retry-review`. It sends saved implementation findings for fixes
+and independent re-review, or retries reviewer validation directly when there
+are no findings. Saved validation limitations remain outstanding until passing
+review evidence is recorded. Human-decision findings require inspection.
+See [blocked review continuation](docs/lifecycle.md#blocked-review-continuation).
+
 To deliberately abandon an interrupted pass, stop the waiting controller with
 Ctrl+C, quit task agents to their original shells while keeping panes open, then
 run `awl loop DEV-7 --abort` from outside the checkout. On Linux V1 it verifies

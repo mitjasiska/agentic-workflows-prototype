@@ -87,7 +87,11 @@ can still refuse recovery. Review additionally requires the entire pinned snapsh
 uncommitted implementation edits are allowed. Known drift calls for inspection
 without invalidating or rewriting the checkpoint. A missing lock, receipt, `idle`
 agent, timestamp, or saved `running` flag alone cannot establish that path. Deliberate `paused` state
-suggests `--continue`; uncertain/conflicting evidence calls for manual inspection.
+suggests `--continue`. A completed blocked review with sufficient saved identity,
+no human-decision findings, and remaining pass limits suggests `--retry-review`
+after the operator resolves its external blocker. The command still verifies
+runtime/provider identity before authorizing any new pass. Uncertain/conflicting
+evidence calls for manual inspection.
 Trust/setup requires action in the original pane/controller. Abort/discard hints
 are explicitly conditional on deliberate abandonment and the commands' own
 ownership/publication checks; they do not certify that cleanup is safe.
@@ -627,6 +631,15 @@ does not claim unrun regression passed. If explicit local/per-pass checks or
 `exhaustive` validation cannot run safely, record the reason and report blocked
 rather than clean.
 
+Review checks can include structured `scope`: `review` for validation required on
+this pass, or `merge` for checks the requirements and validation policy permit
+deferring until merge. An unrun merge-time check remains a limitation, not a
+requirement to run the full suite merely to finish a review retry. This does not
+permit deferring explicit local/per-pass requirements or `exhaustive` validation.
+Executed code checks that fail support `findings` for implementation corrections;
+unavailable mandatory validation is `not_run` and requires `blocked`. A failed
+check still needs independent passing evidence before a clean review.
+
 This is prompt guidance, not controller-enforced proof of command execution. The
 existing result/publication acceptance and Git snapshot safety contracts remain
 unchanged.
@@ -731,7 +744,8 @@ be resumed implicitly. `--timeout` defaults to 1800 seconds after prompt deliver
   implementation-state invalidation from other blocking conditions.
 - `findings`: severity (`critical`, `high`, `medium`, `low`), explanation, concrete
   file/location or other evidence, and optional requirement/test linkage text.
-- `checks`: name, result (`passed`, `failed`, `not_run`), and details.
+- `checks`: name, result (`passed`, `failed`, `not_run`), details, and optional
+  scope (`review` or `merge`).
 - `context_id`, `pass_id`, `pass_kind` (`fresh`/`resumed`), `execution`
   (`kind`/`model`/`mode`), pinned `review_state`, and `post_fingerprint`.
 - `summary`: a human-readable explanation, never an automation verdict source.
@@ -830,7 +844,7 @@ implementation context for later fixes. The human selects the starting boundary;
 idle status alone never establishes completion. Existing-context entries never
 adopt an arbitrary running turn or create a replacement implementation context.
 Let its current turn finish before starting. `--from-review` can accompany `--new`,
-but cannot accompany `--continue`, `--status`, `--abort`, or `--pause-after-current`.
+but cannot accompany `--continue`, `--retry-review`, `--status`, `--abort`, or `--pause-after-current`.
 
 When no completed review is adopted, the first review uses the existing fresh review
 primitive with a newly allocated independent reviewer. It receives current requirements
@@ -890,10 +904,80 @@ for inspection. A later pause remains sticky. `--status`, agent idleness, and
 repeating the ordinary `loop` command never continue a paused loop. Ordinary restart recovery for interrupted passes is described below. Pause/status find
 the checkpoint through the context registry without loading credentials,
 workflow configuration, or Linear; continuation fetches current requirements.
-All three controls resolve the task checkout from implementation/review contexts.
+Loop controls resolve the task checkout from implementation/review contexts.
 Retained integration (`G`) contexts keep their separate isolated checkout and
 provenance; their paths do not participate in this lookup. Missing or conflicting
 task checkout paths still stop the command.
+
+### Blocked review continuation
+
+A completed structured `blocked` review remains escalated until the operator
+resolves its external prerequisite (for example, browser access) and explicitly
+runs:
+
+```sh
+task loop DEV-20 --retry-review
+```
+
+The command retains the checkpoint, checkout, settings, limits, and original
+implementation/reviewer conversations. With implementation findings, it sends
+the exact saved findings and review checks to the implementer for corrections
+and focused validation, then resumes independent review. Without findings, it
+retries reviewer validation directly. Human-decision findings, including batches
+mixed with implementation findings, refuse continuation and require inspection.
+The controller never classifies reviewer prose as an implementation defect.
+
+The review's original findings and checks stay in the bounded report. Failed or
+`not_run` checks from blocked reviews are supplied as outstanding context in later
+review handoffs. Required review checks need independent passing evidence under
+their exact saved names; implementation checks and operator authorization do not
+satisfy this requirement. Deferred `scope=merge` checks may remain `not_run`, with
+limitations carried into the summary and publication metadata. For legacy checks
+without scope, the independent reviewer explicitly classifies permitted deferrals
+under the validation policy. An explicitly required `scope=review` check or a
+failed check cannot be demoted to a deferral before passing.
+New `scope=review` checks reported in the current verdict also require passing
+evidence before clean acceptance, even when all previously saved checks have passed.
+
+A re-review returning findings while required validation is still unavailable or
+omitted is recorded as blocked, retaining its findings and checks. It requires
+another explicit `--retry-review` after the prerequisite is resolved, rather than
+automatically sending another fix pass. A purported clean result lacking required
+passing evidence retains the claim for inspection and grants no acceptance.
+Executed failing code checks allow the normal `findings` → fixes → re-review path
+when no required validation remains unavailable or omitted. Those failures stay
+in review feedback until independent passing evidence is recorded.
+Normal review validation policy and publication authority remain unchanged.
+
+Retry requires no active claim or retained delivery, sufficient remaining bounds
+for the next pass and re-review, and verified checkout/base, requirements,
+implementation and reviewer identities, and idle runtimes. Unresolved evidence
+refuses without changing the checkpoint. Older completed blocked checkpoints
+that saved only the reviewer context ID can restore its binding from that exact
+verified registry context, after checking the provider session and saved settings.
+Missing, conflicting, busy, or non-resumable context identity still refuses.
+The existing reviewer may recreate its pane only after verifying the same
+conversation; unresolved reviewer identity never selects a replacement.
+
+Authorization is saved on the completed blocked record before any new handoff
+claim. A public `--pause-after-current` request at an eligible blocked boundary
+records sticky pause intent without authorizing continuation. It remains sticky
+through retry preflight, including failed preflight; successful retry authorization
+then stops at a paused boundary until `--continue`. Repeating `--retry-review`
+cannot resend an authorized pass: after interruption, use the ordinary `task loop DEV-20` command
+to reconcile the saved boundary or claim; use `--continue` for a resulting pause.
+If result collection stopped before disposing retained delivery evidence, first
+use the ordinary loop command to finish collection/disposal, then explicitly
+retry the blocked review. A later completed blocked pass needs its own explicit
+retry. The existing pass/review bounds are never reset.
+
+`--new` preserves blocked-review evidence and any ensuing continuation until the
+loop finishes cleanly or is explicitly aborted. A failed fix pass cannot discard
+the earlier findings through checkpoint replacement. Explicitly aborted runs
+retain their existing abandonment recovery path. At a completed blocked-review
+boundary, use `--retry-review` after resolving its blocker; no Linear description
+edit or copied chat prompt is needed.
+This control does not handle clean-review follow-up work or stale reviewer claims.
 
 ### Routing, bounds, and results
 
