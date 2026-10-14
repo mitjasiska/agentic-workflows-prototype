@@ -310,10 +310,10 @@ def codex_repository_profiles(data: dict | None) -> dict[str, str]:
 
 
 def default_project_registry() -> Path:
-    """Use the CLI installation's permanent checkout, never the caller's cwd.
+    """Use the CLI's Git checkout or user-private registry, never the caller's cwd.
 
     Git proves the relationship when this code lives in a linked worktree.
-    A non-Git installation retains the sibling config/ resource convention.
+    Installed copies without adjacent Git metadata use the user's private home.
     No parent search, machine paths, or worktree-local fallback is permitted.
     """
     try:
@@ -325,7 +325,7 @@ def default_project_registry() -> Path:
 def _default_project_registry() -> Path:
     source = REGISTRY.parent.parent
     if not os.path.lexists(source / '.git'):
-        return REGISTRY
+        return Path.home() / CONFIG_DIRECTORY / 'projects.toml'
 
     # Inherited Git selectors/config injection must not redirect discovery to
     # the repository of the shell that happened to launch this CLI.

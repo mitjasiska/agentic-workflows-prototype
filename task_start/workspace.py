@@ -11,6 +11,7 @@ import unicodedata
 from uuid import UUID
 
 from . import AgentNotReady, HerdrResponseError, TaskError
+from .command import command_name
 from .github import MergedPull, check_history, merged_pull, repository_name
 from .review_result import unique_object
 
@@ -287,7 +288,7 @@ class Git:
         navigation = "" if checkout == self.repo else f"  cd {repo}\n"
         return (f"Permanent checkout:\n  {repo}\n\n{location}"
                 "Update the permanent checkout, then retry:\n\n"
-                f"{navigation}  git pull --ff-only\n  task cleanup {identifier}")
+                f"{navigation}  git pull --ff-only\n  {command_name()} cleanup {identifier}")
 
     def worktrees(self) -> list[dict]:
         output = self.command("worktree", "list", "--porcelain", "-z")
@@ -341,7 +342,7 @@ class Git:
         if not os.path.lexists(scope):
             if not allow_missing_scope:
                 raise TaskError(f"Cleanup task identity is unknown for {branch!r}: workspace scope metadata is missing; "
-                                f"quit its agents and retry task cleanup {identifier} --force for verified merged "
+                                f"quit its agents and retry {command_name()} cleanup {identifier} --force for verified merged "
                                 "recovery; nothing was removed")
         else:
             if scope.is_symlink() or not scope.is_file():
@@ -503,7 +504,7 @@ class Git:
                     raise ValueError("pending disposal")
         except (OSError, ValueError, KeyError, TypeError, RecursionError):
             raise TaskError(f"Forced cleanup for {identifier} is pending or uncertain; "
-                            f"inspect and rerun task cleanup {identifier} --force before other lifecycle work") from None
+                            f"inspect and rerun {command_name()} cleanup {identifier} --force before other lifecycle work") from None
 
     def load_retirement(self, identifier: str, base: str) -> HerdrRetirement | None:
         record = self.retirement_file(identifier)
@@ -1020,7 +1021,7 @@ class Herdr:
         if len(names) > 1:
             hint = ("Use --slice <branch suffix after the issue ID> to select one, or "
                     "inspect/retire historical work manually." if include_remotes and not disposing else
-                    f"For a proven merged execution, use task cleanup {identifier} --force "
+                    f"For a proven merged execution, use {command_name()} cleanup {identifier} --force "
                     "--branch <exact-local-branch> to select one.")
             raise TaskError(f"Ambiguous workspaces for {identifier}: {details}. Paths: {paths or '(none)'}. "
                             f"{hint} Nothing was deleted.")
@@ -1062,7 +1063,7 @@ class Herdr:
         with ownership_gate(exclusive=True):
             target = self.resolve_task(git, identifier, branch=branch, slice=slice, include_remotes=False)
             if git.load_retirement(identifier, base) is not None:
-                raise TaskError("Workspace retirement is pending; finish task cleanup before starting")
+                raise TaskError(f"Workspace retirement is pending; finish {command_name()} cleanup before starting")
             if target is not None:
                 ownership.enter_context(PublicationStore(target.path).locked())
             return target
@@ -1083,7 +1084,7 @@ class Herdr:
                 if self.resolve_task(git, identifier, branch=branch, slice=slice, include_remotes=False) != target:
                     raise TaskError("Workspace selection changed during preparation; retry exact selection")
                 if git.load_retirement(identifier, base) is not None:
-                    raise TaskError("Workspace retirement is pending; finish task cleanup before starting")
+                    raise TaskError(f"Workspace retirement is pending; finish {command_name()} cleanup before starting")
                 if target is not None:
                     locks.enter_context(PublicationStore(target.path).locked(allow_owned=selected is not _UNSELECTED))
                 workspace = self._prepare_selected(git, base, branch, identifier, slice, default_only, target)

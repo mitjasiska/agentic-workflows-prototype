@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentic-workflows-lite"
+version = "0.1.0.dev0"
+description = "Linux-native, local-first developer workflows with Linear and Herdr"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+]
+
+[project.urls]
+Repository = "https://github.com/mitjasiska/agentic-workflows-lite"
+Documentation = "https://github.com/mitjasiska/agentic-workflows-lite#readme"
+
+[project.scripts]
+awl = "task_start.cli:awl"
+
+[tool.setuptools]
+packages = ["task_start"]
+include-package-data = false
+
+[tool.setuptools.package-data]
+task_start = ["pi_session.mjs", "web/index.html", "web/app.js", "web/styles.css"]

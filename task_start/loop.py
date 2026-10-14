@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from . import TaskError
+from .command import command_name
 from .ownership import ownership_gate, ownership_operation
 from .agent import AgentExecution, AgentOptions, AgentOverrides, adapter_for, resolve_agent_options
 from .metrics import observe_loop
@@ -323,7 +324,7 @@ class LoopRuntime:
         """Collect the claimed pass without invoking any adapter delivery method."""
         if not state.get("delivery"):
             raise TaskError("Claim lacks durable recovery evidence (possibly a historical temporary result); "
-                            "inspect task contexts; completion cannot be reconstructed or replayed")
+                            f"inspect {command_name()} contexts; completion cannot be reconstructed or replayed")
         delivery = PassDelivery(state, persist, None)
         if delivery.evidence["review"] is not None:
             delivery.snapshot()
@@ -355,7 +356,7 @@ class LoopRuntime:
             if value["invalidated"]:
                 raise TaskError("Checkout changed during review recovery; retained pass is invalidated")
             if status == "blocked":
-                raise TaskError("Original agent needs human intervention; resolve it in the exact context, then repeat task loop")
+                raise TaskError(f"Original agent needs human intervention; resolve it in the exact context, then repeat {command_name()} loop")
             output = Path(value["directory"]) / "result.json"
             if status in {"idle", "done"} and output.exists():
                 try:
@@ -538,23 +539,23 @@ def drive(store, state, runtime, *, on_pass_result=None):
         state.update(status="paused", reason="Paused after collecting the current pass; use --continue explicitly")
     except (KeyboardInterrupt, SystemExit):
         state.update(status="interrupted", reason=f"Controller interrupted; the original agent may still be working. "
-                     f"Repeat task loop {runtime.identifier} to reconcile the saved pass; --continue only resumes a pause. "
+                     f"Repeat {command_name()} loop {runtime.identifier} to reconcile the saved pass; --continue only resumes a pause. "
                      "To abandon instead, quit task agents to their original shells, then run "
-                     f"task loop {runtime.identifier} --abort from outside the task checkout")
+                     f"{command_name()} loop {runtime.identifier} --abort from outside the task checkout")
         if state.get("delivery"):
             state["reason"] += f". Retained evidence: {state['delivery']['directory']}"
     except Exception as error:
         runtime.revoke_active_acceptance(state)
         state.update(status="escalated", reason=f"{error}. Inspect contexts before recovery; no handoff was retried")
         if state["active_pass"] is not None:
-            state["reason"] += (f". Preserve the checkpoint/output; repeat task loop {runtime.identifier} after resolving "
+            state["reason"] += (f". Preserve the checkpoint/output; repeat {command_name()} loop {runtime.identifier} after resolving "
                                 "the reported evidence problem. To abandon, stop this controller with Ctrl+C, quit task "
                                 "agents to their original shells, and run "
-                                f"task loop {runtime.identifier} --abort from outside the checkout")
+                                f"{command_name()} loop {runtime.identifier} --abort from outside the checkout")
             if state.get("delivery"):
                 state["reason"] += f". Retained evidence: {state['delivery']['directory']}"
         if isinstance(error, LinearUnavailable) and startup_recovery_blocker(state) is None:
-            state["reason"] = (f"{error}. No initial handoff was claimed; rerun task loop {runtime.identifier} "
+            state["reason"] = (f"{error}. No initial handoff was claimed; rerun {command_name()} loop {runtime.identifier} "
                                "to revalidate and reuse the original reservation")
     store.save(state)
     if state["next_phase"] is None:
@@ -664,10 +665,10 @@ def _loop(identifier, *, action, agent_kind, model, mode, max_reviews, max_passe
                     and ReviewHandoffStore(path).consume(state)):
                 return report(*store.read())
             if state["active_pass"] is not None and not (state.get("delivery") or {}).get("receipt"):
-                raise TaskError("Saved handoff claim has no durable delivery proof; inspect task contexts and retained "
+                raise TaskError(f"Saved handoff claim has no durable delivery proof; inspect {command_name()} contexts and retained "
                                 "output. Never replay it or reconstruct historical temporary output. "
                                 "To abandon without discarding work, stop the controller, quit task agents to their "
-                                f"original shells, then run task loop {identifier} --abort outside the checkout")
+                                f"original shells, then run {command_name()} loop {identifier} --abort outside the checkout")
             if (unclaimed_existing_boundary(state) or state["active_pass"] is not None
                     or "delivery" in state and state["records"] and state["status"] != "paused"
                     and (state["next_phase"] is not None or state["records"][-1]["state"] == "clean"
@@ -705,7 +706,7 @@ def _loop(identifier, *, action, agent_kind, model, mode, max_reviews, max_passe
             try:
                 runtime.prepare(state)
             except LinearUnavailable as error:
-                raise TaskError(f"{error}. Startup reservation retained; rerun task loop {identifier} when Linear recovers") from None
+                raise TaskError(f"{error}. Startup reservation retained; rerun {command_name()} loop {identifier} when Linear recovers") from None
             except TaskError as error:
                 raise TaskError(f"Startup recovery blocked: {error}. Inspect the original context; no handoff was sent") from None
             state = store.restart_initial(state)

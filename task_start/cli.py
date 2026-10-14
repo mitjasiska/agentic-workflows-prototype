@@ -7,6 +7,7 @@ import signal
 import sys
 
 from . import TaskError
+from .command import command_name, command_scope
 from .ownership import ownership_gate
 from .publication_state import PublicationStore
 from .metrics import observe_run
@@ -34,8 +35,8 @@ def issue_identifier(value: str) -> str:
     return value
 
 
-def parser() -> argparse.ArgumentParser:
-    result = argparse.ArgumentParser(prog="task", description="Manage Linear task workspaces in Herdr")
+def parser(prog: str = "task") -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(prog=prog, description="Manage Linear task workspaces in Herdr")
     commands = result.add_subparsers(dest="command", required=True)
     start = commands.add_parser("start", help="Create or reopen a task workspace")
     start.add_argument("issue", type=issue_identifier)
@@ -84,9 +85,9 @@ def parser() -> argparse.ArgumentParser:
                     "then run independent review and fixes. Continue a verified implementation completion or "
                     "adopt an exactly proven completed standalone review; otherwise collect structured completion "
                     "in the original implementation conversation. Existing contexts retain their settings. "
-                    "Configured use needs only task loop ISSUE: [agent] selects initial implementation and "
+                    f"Configured use needs only {prog} loop ISSUE: [agent] selects initial implementation and "
                     "[reviewer] selects review. Optional --i-* and --r-* flags override those roles. "
-                    "Both selections require explicit resolved model and mode. Repeat task loop ISSUE after "
+                    f"Both selections require explicit resolved model and mode. Repeat {prog} loop ISSUE after "
                     "controller interruption to observe its original pass without sending another prompt. "
                     "If an agent turn was interrupted, stop the waiting controller with Ctrl+C first. "
                     "For deliberate abandonment, quit task agents to their original shells, keep panes open, "
@@ -247,7 +248,7 @@ def cleanup_completed(issue, project, repo, git, herdr, pending, target):
             except TaskError as error:
                 raise TaskError(f"Git cleanup is already complete, but Herdr workspace "
                                 f"{pending.workspace_id!r} could not be confirmed retired: {error}. "
-                                f"Rerun task cleanup {issue.identifier} after resolving the Herdr problem") from None
+                                f"Rerun {command_name()} cleanup {issue.identifier} after resolving the Herdr problem") from None
             with ownership_gate(exclusive=True):
                 retire_contexts(issue.identifier, repo, pending.path, pending.workspace_id)
                 retire_missing_contexts(issue.identifier, repo, herdr, pending.path)
@@ -310,7 +311,7 @@ def cleanup_completed(issue, project, repo, git, herdr, pending, target):
             raise TaskError(f"Task cleanup is incomplete. Removed worktree: {target.path}. "
                             f"Removed local branch: {target.branch}. Herdr workspace "
                             f"{retirement.workspace_id!r} could not be confirmed retired: {error}. "
-                            f"Rerun task cleanup {issue.identifier} to finish retirement") from None
+                            f"Rerun {command_name()} cleanup {issue.identifier} to finish retirement") from None
         with ownership_gate(exclusive=True):
             retire_contexts(issue.identifier, repo, retirement.path, retirement.workspace_id)
             retire_missing_contexts(issue.identifier, repo, herdr, target.path)
@@ -340,7 +341,7 @@ def retire_contexts(identifier, repo, path, workspace_id):
             if pane["terminal_id"] in terminals:
                 raise TaskError(f"A task context terminal still exists at {pane['pane_id']} after workspace "
                                 "cleanup (possibly moved by a human); registry mappings were retained. "
-                                f"Inspect it, then rerun task cleanup {identifier}")
+                                f"Inspect it, then rerun {command_name()} cleanup {identifier}")
     registry.retire(identifier, repo, path, endpoint=endpoint, workspace_id=workspace_id)
 
 
@@ -385,8 +386,18 @@ def dashboard_origin(value: str) -> str:
         raise argparse.ArgumentTypeError(str(error)) from None
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = parser().parse_args(argv)
+def awl() -> int:
+    """Installed public entry point; the repository launcher retains task identity."""
+    return main(prog="awl")
+
+
+def main(argv: list[str] | None = None, *, prog: str = "task") -> int:
+    with command_scope(prog):
+        return _main(argv, prog=prog)
+
+
+def _main(argv: list[str] | None, *, prog: str) -> int:
+    args = parser(prog).parse_args(argv)
     try:
         if args.command == "cleanup":
             if args.branch is not None and not args.force:
@@ -444,16 +455,16 @@ def main(argv: list[str] | None = None) -> int:
             print(start(args.issue, no_agent=args.no_agent, slice=args.slice,
                         agent_kind=args.agent_kind, model=args.model, mode=args.mode))
     except TaskError as error:
-        print(f"task: {error}", file=sys.stderr)
+        print(f"{prog}: {error}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         if args.command == "loop" and args.action == "abort":
-            print(f"task: abort interrupted; checkout preserved. Repeat task loop {args.issue} --abort "
+            print(f"{prog}: abort interrupted; checkout preserved. Repeat {prog} loop {args.issue} --abort "
                   "to finish reconciliation before resuming task agents", file=sys.stderr)
         elif args.command == "loop":
-            print(f"task: controller interrupted; the original agent may still be working. "
-                  f"Repeat task loop {args.issue} to reconcile its saved boundary", file=sys.stderr)
+            print(f"{prog}: controller interrupted; the original agent may still be working. "
+                  f"Repeat {prog} loop {args.issue} to reconcile its saved boundary", file=sys.stderr)
         else:
-            print("task: interrupted; inspect workspace and issue state before retrying", file=sys.stderr)
+            print(f"{prog}: interrupted; inspect workspace and issue state before retrying", file=sys.stderr)
         return 130
     return 0

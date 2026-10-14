@@ -400,12 +400,12 @@ class HTTPTests(unittest.TestCase):
                 for route, (name, mime) in dashboard.ASSETS.items():
                     response, body = self.request(route)
                     self.assertEqual(response.status, 200)
-                    self.assertEqual(body, (ROOT / 'web' / name).read_bytes())
+                    self.assertEqual(body, (ROOT / 'task_start' / 'web' / name).read_bytes())
                     self.assertEqual(response.getheader('Content-Type'), mime)
                     self.assertIn("script-src 'self'", response.getheader('Content-Security-Policy'))
                     response, body = self.request(route, 'HEAD')
                     self.assertEqual(body, b'')
-                self.assertEqual(dashboard.asset_root(), ROOT / 'web')
+                self.assertEqual(dashboard.asset_root(), ROOT / 'task_start' / 'web')
             finally:
                 os.chdir(previous)
 
@@ -433,7 +433,7 @@ class TrustedOriginHTTPTests(HTTPTests):
                         if method == 'HEAD':
                             self.assertEqual(body, b'')
                         elif route in dashboard.ASSETS:
-                            self.assertEqual(body, (ROOT / 'web' / dashboard.ASSETS[route][0]).read_bytes())
+                            self.assertEqual(body, (ROOT / 'task_start' / 'web' / dashboard.ASSETS[route][0]).read_bytes())
                         elif route == '/api/snapshot':
                             self.assertEqual(json.loads(body)['projection'], self.source)
                         else:
@@ -712,22 +712,21 @@ class EntryPointTests(unittest.TestCase):
                     dashboard.DashboardServer(dashboard.SnapshotCollector(), port=0, trusted_origin=value)
                 bind.assert_not_called()
 
-    def test_distribution_layout_serves_sibling_web_and_fails_clearly_when_missing(self):
+    def test_distribution_layout_serves_package_assets_and_fails_clearly_when_missing(self):
         with tempfile.TemporaryDirectory() as directory:
             bundle = Path(directory)
-            shutil.copytree(ROOT / 'web', bundle / 'web')
-            (bundle / 'task_start').mkdir()
+            shutil.copytree(ROOT / 'task_start' / 'web', bundle / 'task_start' / 'web')
             copied_module = bundle / 'task_start' / 'dashboard_server.py'
             shutil.copy(ROOT / 'task_start' / 'dashboard_server.py', copied_module)
             spec = importlib.util.spec_from_file_location('task_start.dashboard_resource_fixture', copied_module)
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             assets = module.load_assets()
-            self.assertEqual(assets['/app.js'][0], (ROOT / 'web' / 'app.js').read_bytes())
-            (bundle / 'web' / 'app.js').unlink()
-            with self.assertRaisesRegex(TaskError, 'install web/ beside task_start'):
+            self.assertEqual(assets['/app.js'][0], (ROOT / 'task_start' / 'web' / 'app.js').read_bytes())
+            (bundle / 'task_start' / 'web' / 'app.js').unlink()
+            with self.assertRaisesRegex(TaskError, 'reinstall agentic-workflows-lite'):
                 module.load_assets()
-            (bundle / 'web' / 'app.js').symlink_to(ROOT / 'task_start' / 'config.py')
+            (bundle / 'task_start' / 'web' / 'app.js').symlink_to(ROOT / 'task_start' / 'config.py')
             with self.assertRaises(TaskError):
                 module.load_assets()
 

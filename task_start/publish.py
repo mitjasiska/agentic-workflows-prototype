@@ -11,6 +11,7 @@ import tempfile
 from urllib.parse import urlsplit
 
 from . import TaskError
+from .command import command_name
 from .config import load_local, load_projects, repository_path, resolve_project
 from .contexts import ContextRegistry, HerdrContexts, context_reference
 from .github import api_credential, publication_pull, publish_pull, pull_requests, repository_name
@@ -56,9 +57,9 @@ def native_git(path, *args, env=None, refs=False):
         result = subprocess.run(["git", "-C", str(path), *args], env=env,
                                 stdout=subprocess.PIPE if refs else None, timeout=300, check=False)
     except (OSError, subprocess.TimeoutExpired):
-        raise TaskError("Git publishing operation could not complete; check terminal authentication/signing and rerun task pr") from None
+        raise TaskError(f"Git publishing operation could not complete; check terminal authentication/signing and rerun {command_name()} pr") from None
     if result.returncode:
-        raise TaskError("Git publishing operation failed; resolve the native authentication/signing or Git error above, then rerun task pr")
+        raise TaskError(f"Git publishing operation failed; resolve the native authentication/signing or Git error above, then rerun {command_name()} pr")
     return os.fsdecode(result.stdout) if refs else None
 
 
@@ -168,12 +169,12 @@ def verify_acceptance(accepted, issue, project, repo, workspace, endpoint, regis
                 or {"kind": context["agent"], "model": context["model"], "mode": context["mode"]} != accepted["execution"]):
             raise ValueError("mismatched reviewer")
     except (KeyError, TypeError, ValueError):
-        raise TaskError("No current clean acceptance matches this exact task/context/base; run task review again") from None
+        raise TaskError(f"No current clean acceptance matches this exact task/context/base; run {command_name()} review again") from None
 
 
 def prepare_metadata(issue, accepted):
     if accepted.get("publication") is None:
-        raise TaskError("Clean review lacks public publishing metadata; run task review again")
+        raise TaskError(f"Clean review lacks public publishing metadata; run {command_name()} review again")
     public = publication_metadata(accepted.get("publication"), identifier=issue.identifier)
     title = f"{change_type(issue)}: {public['summary']} ({issue.identifier})"
     body = (f"## Summary\n\n{public['description']}\n\n## Tracking\n\n"
@@ -298,7 +299,7 @@ def require_unpublished(git, permanent, identity, base_branch, branch, base, *, 
     if remote_head is not None:
         record_published(remote_head)
     if remote_base != base:
-        raise TaskError("Remote base changed during rebase preparation; rerun task pr after inspecting base state")
+        raise TaskError(f"Remote base changed during rebase preparation; rerun {command_name()} pr after inspecting base state")
     pulls = list(pull_requests(identity["repository"], branch)) if remote_head is None else []
     if pulls:
         record_published(pulls[0]["head"].get("sha"))
@@ -319,7 +320,7 @@ def _advance_base(git, permanent, identity, base_branch, branch, reviewed_base, 
                identity["remote"], f"refs/heads/{base_branch}")
     fetched = git.command("rev-parse", "--verify", "FETCH_HEAD^{commit}").strip()
     if fetched != remote_base:
-        raise TaskError("Remote base changed while fetching; rerun task pr to verify the latest base")
+        raise TaskError(f"Remote base changed while fetching; rerun {command_name()} pr to verify the latest base")
     permanent.check_base(base_branch)
     local_base = permanent.command("rev-parse", "HEAD").strip()
     for ancestor in (reviewed_base, local_base):
@@ -336,7 +337,7 @@ def _advance_base(git, permanent, identity, base_branch, branch, reviewed_base, 
 
 def publish(identifier):
     if any(k in os.environ for k in ("GIT_INDEX_FILE", "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR")):
-        raise TaskError("Unset Git repository/index routing environment overrides before task pr")
+        raise TaskError(f"Unset Git repository/index routing environment overrides before {command_name()} pr")
     local = load_local(no_agent=True)
     issue = Linear(local.api_key).get_issue(identifier)
     project = resolve_project(load_projects(), issue.project)
@@ -357,7 +358,7 @@ def publish(identifier):
                     integration_guard.finish()
         if (saved["rebase"] is not None and saved["rebase"].get("integration_id")
                 and saved["rebase"]["result"] is not None and saved["acceptance"] is None):
-            raise TaskError("No current clean acceptance; run a new independent task review of the installed integration")
+            raise TaskError(f"No current clean acceptance; run a new independent {command_name()} review of the installed integration")
         accepted, intent = saved["acceptance"], saved["intent"]
         git = Git(workspace.path)
         permanent = Git(repo)
@@ -476,11 +477,11 @@ def publish(identifier):
             if (rebase["result"] != accepted["review_state"]
                     or validate_commits(git, rebase) != accepted["review_state"]["head"]
                     or accepted.get("publication_approval") != publication_fingerprint(frozen)):
-                raise TaskError("Clean review does not approve this rebased state and frozen publication metadata; run task review again")
+                raise TaskError(f"Clean review does not approve this rebased state and frozen publication metadata; run {command_name()} review again")
         if intent is None:
             before = snapshot(workspace.path, reviewed_base, workspace.branch)
             if before.as_dict() != accepted["review_state"]:
-                raise TaskError("Task state drifted since its clean review; run task review again")
+                raise TaskError(f"Task state drifted since its clean review; run {command_name()} review again")
             check_publishable_index(git)
             title, body = ((frozen["title"], frozen["body"]) if frozen is not None else prepare_metadata(issue, accepted))
             with prepared_index(git) as (_, tree, index):
@@ -496,7 +497,7 @@ def publish(identifier):
             if frozen is not None:
                 intent["reuse_head"] = before.head
             if snapshot(workspace.path, reviewed_base, workspace.branch) != before:
-                raise TaskError("Task changed while preparing publication; run task review again")
+                raise TaskError(f"Task changed while preparing publication; run {command_name()} review again")
         else:
             try:
                 if (intent["version"] != 1 or intent["pass_id"] != accepted["pass_id"]

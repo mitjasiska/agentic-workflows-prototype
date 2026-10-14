@@ -5,7 +5,7 @@ import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
 
-const app = readFileSync(new URL('../web/app.js', import.meta.url), 'utf8');
+const app = readFileSync(new URL('../task_start/web/app.js', import.meta.url), 'utf8');
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 function deferred() {
   let resolve, reject;

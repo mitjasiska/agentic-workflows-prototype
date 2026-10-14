@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from . import TaskError
+from .command import command_name
 from .agent import AgentOptions, adapter_for
 from .cleanup import check_unreserved
 from .contexts import ContextRegistry, HerdrContexts, context_reference, now, reconcile
@@ -244,8 +245,8 @@ def abort_loop(identifier):
         review_ready = original["active_pass"]["phase"] in {"review", "rereview"}
         reason = ("Pass abandoned; checkout and session history preserved. Resume the exact implementation session "
                   "in its original pane, then use ")
-        reason += (f"task loop {identifier} --new --from-review for fresh independent review" if review_ready else
-                   f"task loop {identifier} --new to explicitly continue incomplete implementation before review")
+        reason += (f"{command_name()} loop {identifier} --new --from-review for fresh independent review" if review_ready else
+                   f"{command_name()} loop {identifier} --new to explicitly continue incomplete implementation before review")
         finished = dict(original, status="aborted", reason=reason, active_pass=None, delivery=None, next_phase=None,
                         snapshot=current, abandonment=dict(claim=original["active_pass"], review_ready=review_ready,
                                                            timestamp=journal["timestamp"]))
@@ -257,6 +258,6 @@ def abort_loop(identifier):
                                        "implementation in that native session first")
         else:
             finished["reason"] = (f"Undelivered initial pass abandoned; checkout preserved. "
-                                  f"Use task loop {identifier} --new to reuse its original empty-shell reservation")
+                                  f"Use {command_name()} loop {identifier} --new to reuse its original empty-shell reservation")
         store.finish_abort(state, finished)
         return report(*store.read())

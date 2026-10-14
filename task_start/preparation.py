@@ -5,6 +5,7 @@ import re
 import sys
 
 from . import TaskError
+from .command import command_name
 from .config import IssueStructureConfig
 from .workspace import branch_name
 
@@ -20,7 +21,7 @@ def check_issue_structure(issue, policy: IssueStructureConfig):
     if policy.mode == "required":
         raise TaskError(message + "Required by linear.issue_structure.mode=required; "
                         "add the configured block in Linear or change the issue_structure policy before starting agent execution")
-    print("task: warning: " + message + "Continuing agent execution (linear.issue_structure.mode=warn).", file=sys.stderr)
+    print(f"{command_name()}: warning: " + message + "Continuing agent execution (linear.issue_structure.mode=warn).", file=sys.stderr)
 
 
 def prepare_task(issue, project, linear, git, herdr_factory, *, check_configuration,

@@ -205,6 +205,7 @@ class LayeredConfigTests(unittest.TestCase):
         package.mkdir(parents=True)
         for name in ('__init__.py', 'config.py'):
             shutil.copyfile(REGISTRY.parent.parent / 'task_start' / name, package / name)
+        subprocess.run(['git', 'init', '-q', str(installation)], check=True)
         (installation / 'config').mkdir()
         shutil.copyfile(runtime, installation / 'config/projects.toml')
         alias = self.root / 'cli-alias'

@@ -13,6 +13,7 @@ import re
 from types import SimpleNamespace
 
 from . import TaskError
+from .command import command_name
 from .config import load_projects, status_projects_root
 from .contexts import ContextRegistry, HerdrContexts, context_reference
 from .integration_state import IntegrationStore
@@ -250,23 +251,23 @@ def guidance(task, observable=False):
         result.update(kind='human_action', human_action_required=True,
                       message='Handle trust/setup in the identified pane, then acknowledge in the original controller.')
     elif state == 'paused':
-        result.update(kind='continue', human_action_required=True, command=f'task loop {issue} --continue',
+        result.update(kind='continue', human_action_required=True, command=f'{command_name()} loop {issue} --continue',
                       message='The loop deliberately paused at a saved boundary; explicit continuation is required.')
     elif task['controller'] == 'held' and state in {'integration_pending', 'publication_pending', 'cleanup_pending', 'aborting'}:
         result['message'] = 'A controller owns this checkout and its saved operation is pending; no intervention is indicated.'
     elif state == 'interrupted' and observable and task['controller'] == 'unowned':
         result.update(kind='observe', human_action_required=True, reconciliation_required=True,
-                      command=f'task loop {issue}',
-                      message='Try observing the original saved pass by repeating task loop. It never resends the pass; runtime/provider proof may still refuse recovery.')
+                      command=f'{command_name()} loop {issue}',
+                      message=f'Try observing the original saved pass by repeating {command_name()} loop. It never resends the pass; runtime/provider proof may still refuse recovery.')
     elif state in {'interrupted', 'escalated', 'aborting', 'aborted', 'uncertain', 'findings', 'blocked', 'failed',
                    'stale_review', 'integration_pending', 'publication_pending', 'cleanup_pending'}:
         result.update(kind='inspect', human_action_required=True, reconciliation_required=True,
                       message='Inspect the saved boundary and contexts before taking further lifecycle action.')
     if task['loop'] and task['loop']['active_pass'] and state not in {'running', 'awaiting_user'}:
-        result['options'].append(dict(command=f'task loop {issue} --abort', conditional=True,
+        result['options'].append(dict(command=f'{command_name()} loop {issue} --abort', conditional=True,
             message='If deliberately abandoning: stop the controller, quit task agents to their original shells, stop child jobs, and run outside the checkout. Abort must prove safety and may refuse.'))
     if state in {'aborted', 'escalated', 'cleanup_pending'}:
-        result['options'].append(dict(command=f'task cleanup {issue} --force', conditional=True,
+        result['options'].append(dict(command=f'{command_name()} cleanup {issue} --force', conditional=True,
             message='Only if discarding this execution is intended. Run outside its checkouts after stopping active work; cleanup verifies ownership/publication and may refuse.'))
     return result
 
@@ -828,7 +829,8 @@ def render_loop_report(state, pause):
     # exception bodies. Their prose has no safe report provenance; use canonical
     # diagnostics instead. Structured blocked outcomes remain fully reportable.
     if ('. Inspect contexts before recovery; no handoff was retried' in state['reason']
-            or '. No initial handoff was claimed; rerun task loop ' in state['reason']):
+            or any(f'. No initial handoff was claimed; rerun {name} loop ' in state['reason']
+                   for name in ('task', 'awl'))):
         raise TaskError('Unfiltered controller failure')
     findings = []
     for record in state['records']:

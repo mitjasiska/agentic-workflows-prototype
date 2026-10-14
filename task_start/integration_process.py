@@ -8,6 +8,7 @@ import shutil
 import sys
 
 from . import TaskError
+from .command import command_name
 
 
 def stopped_checkout(path, shell_pid=None, *, proc=Path("/proc")):
@@ -322,7 +323,7 @@ def stopped_loop_execution(path, shells, *, proc=Path("/proc")):
             "Keep the original panes open, quit agents and child/background/session jobs, "
             "then retry from outside the checkout on Herdr's Linux host/PID namespace. "
             "Original shell executable/argv/cwd/TTY and PID/start identity, plus complete "
-            "process-family evidence, must remain verifiable. Inspect task contexts and "
+            f"process-family evidence, must remain verifiable. Inspect {command_name()} contexts and "
             "the original shells; do not replace panes or clear the claim to bypass this check"
         ) from error
 

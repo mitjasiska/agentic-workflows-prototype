@@ -17,6 +17,7 @@ import time
 from uuid import UUID
 
 from . import TaskError
+from .command import command_name
 from .contexts import context_reference, reconcile
 from .review_result import unique_object
 from .review_state import snapshot
@@ -252,11 +253,11 @@ class PassDelivery:
               f"({self.state['active_pass']['context_id']}): elapsed {elapsed:.0f}s; "
               f"warning threshold {self.state['timeout']:g}s exceeded. "
               "Still observing the original agent turn; verified completion remains pending. "
-              f"Leave it working, inspect task loop {issue} --status [--json], or request "
-              f"task loop {issue} --pause-after-current in another terminal. "
+              f"Leave it working, inspect {command_name()} loop {issue} --status [--json], or request "
+              f"{command_name()} loop {issue} --pause-after-current in another terminal. "
               "Ctrl+C stops this waiting controller, not necessarily the agent turn. "
               "To stop/abandon work, explicitly quit task agents, then use "
-              f"task loop {issue} --abort or task cleanup {issue} --force from outside the checkout "
+              f"{command_name()} loop {issue} --abort or {command_name()} cleanup {issue} --force from outside the checkout "
               "(cleanup discards work).", file=sys.stderr, flush=True)
 
     def contexts_digest(self):

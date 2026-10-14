@@ -149,10 +149,19 @@ class RegistryDiscoveryTests(unittest.TestCase):
     def test_non_git_installation_never_searches_parent_or_cwd(self):
         installation = self.repo / 'nested-installation'
         installation.mkdir()
-        with patch.object(config, 'REGISTRY', installation / 'config/projects.toml'):
-            self.assertEqual(config.default_project_registry(), installation / 'config/projects.toml')
+        home = self.root / 'home'
+        registry = home / config.CONFIG_DIRECTORY / 'projects.toml'
+        # Even a sibling mapping in a nested Git directory is not an authority.
+        (installation / 'config').mkdir()
+        (installation / 'config/projects.toml').write_text(MAPPING)
+        with patch.object(config, 'REGISTRY', installation / 'config/projects.toml'), \
+                patch.object(Path, 'home', return_value=home):
+            self.assertEqual(config.default_project_registry(), registry)
             with self.assertRaisesRegex(TaskError, 'Config missing'):
                 config.load_projects()
+            registry.parent.mkdir(parents=True)
+            registry.write_text(MAPPING)
+            self.assertEqual(config.load_projects()[0].linear_project, 'Synthetic Project')
 
     def test_explicit_registry_path_remains_supported(self):
         explicit = self.root / 'explicit.toml'

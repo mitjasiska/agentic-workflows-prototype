@@ -15,6 +15,7 @@ import threading
 from urllib.parse import parse_qs, urlsplit
 
 from . import TaskError
+from .command import bind_command
 from .status import report_identity, task_loop_report, task_status, unavailable_report
 
 
@@ -46,9 +47,9 @@ def trusted_https_origin(value):
 
 
 def asset_root():
-    # Distribution contract: ship web/ beside task_start/, in the same release.
+    # Package data ships with this module in both wheels and source checkouts.
     # Never fall back to cwd or allow a request to choose a resource location.
-    return Path(__file__).resolve().parent.parent / 'web'
+    return Path(__file__).resolve().parent / 'web'
 
 
 def load_assets():
@@ -61,7 +62,7 @@ def load_assets():
                 raise OSError('Asset outside bundle')
             assets[route] = (path.read_bytes(), content_type)
     except OSError:
-        raise TaskError('Dashboard assets are missing or invalid; install web/ beside task_start/.') from None
+        raise TaskError('Dashboard assets are missing or invalid; reinstall agentic-workflows-lite.') from None
     return assets
 
 
@@ -73,7 +74,7 @@ class SnapshotCollector:
     def __init__(self, reader=None, *, interval=REFRESH_SECONDS):
         if interval <= 0:
             raise ValueError('Refresh interval must be positive')
-        self.reader = reader or task_status
+        self.reader = bind_command(reader or task_status)
         self.interval = interval
         self.condition = threading.Condition()
         self.stopped = threading.Event()
@@ -149,7 +150,7 @@ class DashboardServer(ThreadingHTTPServer):
         self.collector = collector
         self.assets = load_assets()
         self.streams = threading.BoundedSemaphore(16)
-        self.report_reader = report_reader or task_loop_report
+        self.report_reader = bind_command(report_reader or task_loop_report)
         self.report_reads = threading.BoundedSemaphore(2)
         super().__init__((HOST, port), DashboardHandler)
 
