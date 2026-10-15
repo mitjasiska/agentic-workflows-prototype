@@ -74,11 +74,12 @@
   coverage, full-diff review, targeted/adversarial checks, and complete findings
   batches. Explicit local/per-pass requirements and `exhaustive` review remain
   authoritative; see [validation guidance](docs/lifecycle.md#validation-guidance).
-- Full offline regression is required before human merge, through configured and
-  evidenced CI or human verification. It is not an automatic step after focused
-  agent checks. The suite is `python3.12 -m unittest discover -s tests -v`; it needs
-  no credentials, network, installed agents, or real Herdr workspaces. Record
-  unrun regression as pending, never passed; see [validation](docs/architecture.md#validation).
+- Follow the canonical [AWL validation policy](docs/lifecycle.md#validation-guidance):
+  ordinary human merges require independent review/approval and passing fast PR
+  checks; full regression runs nightly and gates the final release candidate,
+  not every merge. Preserve explicit test requirements and report unrun checks
+  as pending, never passed. See [CI operation](docs/architecture.md#github-actions)
+  for commands, evidence, and human repository-settings setup.
 - For project-mapping changes, check the generated skill snapshot with
   `python3.12 skills/create-linear-task/scripts/sync_config.py --check`.
   Component-specific validation remains documented with that component.

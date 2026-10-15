@@ -475,14 +475,11 @@ only the existing workflow evidence governs those actions.
 
 ## Validation
 
-Agent-local implementation and default `focused_first` review use relevant focused
-checks and proportionate inexpensive validation. Both findings and clean review
-passes retain targeted testing without automatically triggering the full suite.
-Continue full-diff inspection and targeted/adversarial checks after finding a
-defect, then report the complete findings batch. Focused execution does not reduce
-thorough test coverage. Explicit issue/repository local or per-pass requirements
-remain authoritative, and `exhaustive` requests full validation on every review
-pass, even with findings. See [validation guidance](lifecycle.md#validation-guidance).
+The canonical [validation policy](lifecycle.md#validation-guidance) separates
+focused implementation/review checks, fast PR CI for ordinary human merges,
+nightly regression, and the exact-revision full release-candidate gate. Explicit
+local/per-pass requirements and deliberately requested `exhaustive` review still
+apply. This section describes test mechanics, CI operation, and dated evidence.
 
 Tests mock Linear, GitHub, Herdr, Codex RPC, and process boundaries and exercise Git
 safety and authoritative remote lookup in temporary repositories with a local fake
@@ -518,8 +515,8 @@ python3.12 -m venv /tmp/awl-packaging-checks
 ```
 
 The packaging module reports a skip if its build prerequisites are absent; such a
-skip is not evidence that packaging passed. Use a provisioned interpreter for the
-full pre-merge gate as well, or separately evidence the packaging checks.
+skip is not evidence that packaging passed. Use a provisioned interpreter for
+fast PR checks, nightly regression, and the full release-candidate gate as well.
 
 Focused implementation/review checks for forced cleanup include cleanup and
 integration-recovery coverage:
@@ -553,19 +550,112 @@ These local artifacts are validation evidence, not a live-model or full-loop tes
 The harness refuses filtered/sandbox proc mounts before creating resources and
 does not participate in the credential-free offline suite.
 
-Final pre-merge gate: the full offline regression suite must pass before human
-merge, separately from agent-local focused validation:
+The complete offline suite used by nightly CI and the release-candidate gate is:
 
 ```sh
-python3.12 -m unittest discover -s tests -v
+COLUMNS=240 python3.12 -m unittest discover -s tests -v
 ```
 
-Configured external CI is the preferred owner of this gate where requirements
-permit it; count it only with evidence identifying the source and applicable
-revision. Without an established external gate, report final regression as pending
-human verification. Record unrun checks as `not_run`; a clean review does not mean
-that unexecuted regression passed. CI does not replace explicit local/per-pass
-checks.
+Count external evidence only for its identified revision; report unrun checks as
+`not_run`. A clean review does not mean unexecuted regression passed.
+
+### GitHub Actions
+
+[`pr.yml`](../.github/workflows/pr.yml) runs **Fast PR checks** on every
+`pull_request` targeting `main`, including documentation-only changes. It tests
+GitHub's PR merge revision, checks whitespace against its first parent (the base),
+and cancels obsolete runs for that PR. The target is 5–10 minutes, with a 15-minute
+timeout rather than a runtime guarantee. The explicit unittest selection covers
+CLI/configuration and task-start behavior, offline package builds and installations,
+lifecycle/Git safety, validation policy, review identity and result acceptance,
+publication approval/retry safeguards, loop result/routing contracts, and clean
+and findings/fix/re-review loop flows.
+No test selection engine or test suppression is involved; all remaining tests
+continue to run in the complete suite.
+
+To reproduce the smoke command from the repository root, use a Python 3.12
+environment with `setuptools==84.0.0` (the workflows' pinned build prerequisite):
+
+```sh
+COLUMNS=240 PYTHONPATH=tests python3.12 -m unittest -v \
+  test_task_start \
+  test_packaging \
+  test_lifecycle \
+  test_validation_policy \
+  test_review \
+  test_publish.PublishingBoundaryTests \
+  test_publish.RemoteIdentityTests \
+  test_publish.PullIdentityTests \
+  test_publish.PublishingTests.test_happy_path_and_completed_retry_are_exactly_once \
+  test_publish.PublishingTests.test_commit_success_push_failure_continues_without_another_commit \
+  test_publish.PublishingTests.test_new_failed_or_interrupted_review_revokes_old_acceptance \
+  test_publish.PublishingTests.test_drift_before_publish_and_after_commit_is_never_pushed \
+  test_publish.PublishingTests.test_rebased_clean_review_requires_explicit_matching_metadata_approval \
+  test_publish.PublishingTests.test_frozen_metadata_and_intent_drift_refuse_even_on_committed_retry \
+  test_loop.LoopContractTests \
+  test_loop.LoopIntegrationTests.test_clean_first_review_preserves_separation_and_reports_validation \
+  test_loop.LoopIntegrationTests.test_from_review_findings_continue_to_original_fixes_and_same_reviewer
+```
+
+[`nightly.yml`](../.github/workflows/nightly.yml) runs the full command above at
+**02:23 UTC daily** (`23 2 * * *`) on `main`, with a 120-minute timeout. It also
+accepts `workflow_dispatch` for the selected branch/tag, allowing an exact release
+candidate to be tested. Checkout uses the triggering SHA; it does not fetch a
+moving `main` tip after dispatch. GitHub schedules run on the default branch, so
+`main` must remain the default; the job refuses a scheduled run on another branch.
+The workflow must exist on the default branch for scheduled/manual triggers.
+Schedules may be delayed, and inactive public repositories may have them disabled;
+check for missing runs as well as failures. See GitHub's
+[event documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows).
+
+Both jobs use Ubuntu 24.04, Python 3.12, `COLUMNS=240`, pinned official actions,
+`contents: read` permissions, and checkout without persisted credentials. Setup
+downloads Python/build tools; the tests need no secrets, live service credentials,
+installed agents, or real Herdr workspaces. No workflow publishes or mutates remote
+repositories. Native Actions logs include verbose unittest results and elapsed
+time; job summaries record the tested revision, outcome, and link to logs.
+Failures propagate to the job result without `continue-on-error`. Non-blocking
+nightly means it is not a required PR status check, not that failures turn green.
+
+Human deployment and repository-settings review:
+
+1. Publish the independently reviewed workflow files in a PR targeting `main` and
+   ensure repository Actions settings allow the pinned official actions. Witness
+   **Fast PR checks** on a real PR. Record its run URL, PR head and tested merge
+   SHAs, duration, test totals/skips, and conclusion. Verify a deliberate selected
+   test failure on a disposable PR revision reports red, then restore it and
+   obtain green on the final reviewed revision.
+2. In the `main` ruleset/branch protection, require a pull request with independent
+   approval and the **Fast PR checks** status from GitHub Actions. Select the check
+   after its first run makes it available. Do not require **Full offline regression**
+   for ordinary merges. Preserve existing security/approval protections. These
+   files do not change repository settings; until configured, the human operator
+   must still enforce review/approval and a green fast check before merge.
+3. Once the workflows are on default `main`, open Actions → **Nightly full
+   regression** → **Run workflow**, select `main`, and dispatch. Confirm it starts,
+   verify the tested SHA, and record the actual outcome and logs. For release
+   evidence, select the candidate branch/tag and compare the recorded SHA with the
+   exact candidate; do not use the latest nightly badge as substitute evidence.
+4. Check nightly outcomes and investigate failures or missing runs. Keep failed
+   evidence marked failed. Download relevant logs from the run before repository
+   retention expires, especially for release acceptance.
+
+#### DEV-96 validation evidence (2026-10-15)
+
+The exact smoke command above passed **250 tests with no skips in 387.36 seconds
+(6m27s wall time)** locally, using Python 3.12.3 and setuptools 84.0.0 in the DEV-96
+worktree based on `9e2c6031c1383796c0efafebb000fd320782e568`, with the workflow/docs
+changes uncommitted. This excludes environment provisioning and GitHub queue/setup
+time. YAML/actionlint, shell syntax, and local failure/revision/whitespace probes
+also passed; they do not establish a GitHub run.
+
+Real PR triggering, GitHub runtime/pass/fail reporting, manual nightly
+dispatch/outcome, and repository protection configuration are **pending** until
+witnessed after human deployment. Record the first real PR duration alongside this
+local measurement. Full regression and live release acceptance were not run in
+this implementation pass; no passing release gate is claimed.
+
+### Offline regression coverage
 
 Loop coverage uses real disposable Git worktrees, context registries, and private
 checkpoint databases with controlled agent/config/Linear boundaries. It covers

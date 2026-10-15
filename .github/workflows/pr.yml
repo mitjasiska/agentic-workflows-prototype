@@ -1,0 +1,69 @@
+name: Fast PR validation
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fast-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  fast-pr:
+    name: Fast PR checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      COLUMNS: '240'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+      - name: Record tested revision
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          printf 'Tested PR merge revision: `%s`\n\nPR head: `%s`\n' "$(git rev-parse HEAD)" "$PR_HEAD_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Check PR whitespace
+        # The first parent of GitHub's PR merge commit is the base revision.
+        run: git diff --check HEAD^1 HEAD
+      - name: Provision offline packaging prerequisites
+        run: python3.12 -m pip install 'setuptools==84.0.0'
+      - name: Run fast suite
+        env:
+          PYTHONPATH: tests
+        run: |
+          time python3.12 -m unittest -v \
+            test_task_start \
+            test_packaging \
+            test_lifecycle \
+            test_validation_policy \
+            test_review \
+            test_publish.PublishingBoundaryTests \
+            test_publish.RemoteIdentityTests \
+            test_publish.PullIdentityTests \
+            test_publish.PublishingTests.test_happy_path_and_completed_retry_are_exactly_once \
+            test_publish.PublishingTests.test_commit_success_push_failure_continues_without_another_commit \
+            test_publish.PublishingTests.test_new_failed_or_interrupted_review_revokes_old_acceptance \
+            test_publish.PublishingTests.test_drift_before_publish_and_after_commit_is_never_pushed \
+            test_publish.PublishingTests.test_rebased_clean_review_requires_explicit_matching_metadata_approval \
+            test_publish.PublishingTests.test_frozen_metadata_and_intent_drift_refuse_even_on_committed_retry \
+            test_loop.LoopContractTests \
+            test_loop.LoopIntegrationTests.test_clean_first_review_preserves_separation_and_reports_validation \
+            test_loop.LoopIntegrationTests.test_from_review_findings_continue_to_original_fixes_and_same_reviewer
+      - name: Report result
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          printf 'Job result: **%s**\n\n[Run and logs](%s/%s/actions/runs/%s)\n' "$JOB_STATUS" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >> "$GITHUB_STEP_SUMMARY"

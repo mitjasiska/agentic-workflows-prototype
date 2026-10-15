@@ -350,8 +350,8 @@ actors in one worktree, then have the sandboxed agents open a local app, snapsho
 set distinct cookies/local storage, navigate independently, and close one while
 the others remain usable. Repeat across worktrees and on fresh/resumed review.
 Record actual agent/Chrome versions and report unavailable Codex, Pi, custom-agent,
-or multi-instance checks explicitly. Full offline regression remains a merge-time
-gate under the [repository validation guidance](architecture.md#validation).
+or multi-instance checks explicitly. Nightly and release-candidate full regression
+follow the [canonical validation policy](lifecycle.md#validation-guidance).
 
 ### Dated transport evidence
 
@@ -371,4 +371,5 @@ This is transport evidence, not live Chrome acceptance.
 Direct `unshare` was denied. Paired DEV-104-R1 host/sandbox acceptance and an actual
 user-level helper upgrade are **not_run**: this pass cannot write the host helper
 installation or run outside Codex. The managed upgrade is covered in temporary-home
-tests. Full offline regression remains pending for the pre-merge owner.
+tests. Full offline regression was not run for this historical check; current
+nightly and release-candidate obligations follow the canonical validation policy.
