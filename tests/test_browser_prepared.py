@@ -1137,8 +1137,9 @@ class BrowserProtocolTests(unittest.TestCase):
 
 class GuidedSetupTests(BrowserFixture, unittest.TestCase):
     def install(self, *args, env=None):
+        # Consent must be explicit even when the test runner has terminal stdin.
         return subprocess.run([sys.executable, str(INSTALLER), *args], env=env or self.env,
-                              capture_output=True, text=True, timeout=15)
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15)
 
     def test_missing_browser_requires_consent_and_does_not_write_helpers(self):
         (self.bin / 'agent-browser').unlink()

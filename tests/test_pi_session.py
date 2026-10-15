@@ -23,10 +23,16 @@ class PiSessionDiscoveryTests(unittest.TestCase):
         execution = AgentExecution(ISSUE, Path("/repo"), workspace, options, "Review", purpose="review")
         agent = dict(agent="pi", agent_status="idle", workspace_id="w1", tab_id="t1", pane_id="p1",
                      terminal_id="terminal", cwd="/checkout", foreground_cwd="/checkout")
+        # These session fixtures mock shell readiness alongside the Herdr launch.
         with patch.object(adapter, "validate_model_mode"), patch.object(adapter, "check_target"), \
+                patch.object(adapter, "clear_shell_input") as clear_shell_input, \
                 patch.object(adapter, "start_agent", return_value=agent) as start, \
-                patch.object(adapter, "command", return_value=dict(agent=agent)):
+                patch.object(adapter, "command", return_value=dict(agent=agent)) as command:
             result = adapter.launch(execution)
+        clear_shell_input.assert_called_once_with(workspace)
+        start.assert_called_once()
+        self.assertEqual([c.args for c in command.call_args_list if c.args[1] == "prompt"],
+                         [("agent", "prompt", "p1", "Review")])
         args = start.call_args.args[1]
         extension = Path(args[args.index("--extension") + 1])
         self.assertEqual(extension, Path(__file__).resolve().parents[1] / "task_start/pi_session.mjs")
@@ -99,10 +105,16 @@ class PiSessionDiscoveryTests(unittest.TestCase):
             self.assertEqual(registry.get(context_id)["resumability"], "yes")
 
             resumed = replace(execution, handoff="Focused follow-up", runtime_observer=context_observer(registry, context_id))
-            with patch.object(adapter, "check_target"), patch.object(adapter, "start_agent", return_value=agent), \
+            with patch.object(adapter, "check_target"), \
+                    patch.object(adapter, "clear_shell_input") as clear_shell_input, \
+                    patch.object(adapter, "start_agent", return_value=agent) as start, \
                     patch.object(adapter, "model_mode_capabilities", return_value=("model", "high", ("high",))), \
                     patch.object(adapter, "command", return_value=dict(agent=agent)) as command:
-                adapter.resume_review(resumed, reference, recreate=True)
+                result = adapter.resume_review(resumed, reference, recreate=True)
+            clear_shell_input.assert_called_once_with(workspace)
+            start.assert_called_once_with(workspace, ["--model", "model", "--thinking", "high", "--extension",
+                str(root / "task_start/pi_session.mjs"), "--session", str(path)], review=True)
+            self.assertEqual((result.session_id, result.session_kind, result.resumability), (str(path), "path", "yes"))
             self.assertEqual([c.args for c in command.call_args_list if c.args[1] == "prompt"],
                              [("agent", "prompt", "review-pane", "Focused follow-up")])
             changed = data["switchedReport"]["params"]
