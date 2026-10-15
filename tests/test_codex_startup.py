@@ -177,6 +177,49 @@ class FreshCodexStartTests(unittest.TestCase):
         t.assert_effects(1, 0)
         self.assertEqual(self.registry.get("DEV-7-I1")["session_id"], t.thread_id)
 
+    def test_missing_native_report_warns_before_delivery_and_saves_provider_identity(self):
+        t = self.transport
+        t.get_changes = dict(agent_session=None)
+        with patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            t.on_queue = lambda prompt: self.assertIn("interrupted-pass recovery", stderr.getvalue())
+            cli.start("DEV-7")
+        t.assert_effects(1, 1)
+        self.assertEqual(stderr.getvalue().count("Warning: Herdr"), 1)
+        self.assertIn("herdr integration status", stderr.getvalue())
+        self.assertIn("docs/configuration.md#herdr-codex-session-hook", stderr.getvalue())
+        row = self.registry.get("DEV-7-I1")
+        self.assertEqual((row["session_id"], row["resumability"]), (t.thread_id, "yes"))
+        self.assertIsNone(row["herdr_session"])  # Do not invent a native report.
+
+    def test_matching_native_hook_report_needs_no_warning(self):
+        t = self.transport
+        report = dict(agent="codex", kind="id", value=t.thread_id, source="herdr:codex")
+        t.start_changes = t.get_changes = dict(agent_session=report)
+        with patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            cli.start("DEV-7")
+        t.assert_effects(1, 1)
+        self.assertNotIn("Warning: Herdr", stderr.getvalue())
+        self.assertEqual(json.loads(self.registry.get("DEV-7-I1")["herdr_session"]), report)
+
+    def test_lost_native_report_is_not_downgraded_to_warning(self):
+        t = self.transport
+        t.start_changes = dict(agent_session=dict(agent="codex", kind="id", value=t.thread_id))
+        t.get_changes = dict(agent_session=None)
+        with patch("sys.stderr", new_callable=io.StringIO) as stderr, self.assertRaisesRegex(
+                TaskError, "session changed or is no longer reported"):
+            cli.start("DEV-7")
+        t.assert_effects(1, 0)
+        self.assertNotIn("Warning: Herdr", stderr.getvalue())
+        self.assertEqual(self.registry.get("DEV-7-I1")["session_id"], t.thread_id)
+
+    def test_ambiguous_native_report_refuses_before_warning_or_delivery(self):
+        t = self.transport
+        t.get_changes = dict(agent_session={})
+        with patch("sys.stderr", new_callable=io.StringIO) as stderr, self.assertRaises(TaskError):
+            cli.start("DEV-7")
+        t.assert_effects(1, 0)
+        self.assertNotIn("Warning: Herdr", stderr.getvalue())
+
     def test_prompt_timeout_keeps_identity_and_never_resubmits(self):
         t = self.transport
         t.receipt_delay = 100
