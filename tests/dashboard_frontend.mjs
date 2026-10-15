@@ -78,7 +78,8 @@ function harness(initial = snapshot(), reportReader = null) {
         const index = Number(query.get('task')), revision = Number(query.get('revision'));
         const selected = current.projection.tasks[index];
         const identity = [selected.issue, selected.repository.path, selected.workspace.path, selected.workspace.branch, selected.workspace.workspace_id, selected.workspace.endpoint ?? null];
-        const result = reportReader ? await reportReader({index, revision, options}) : {
+        const iteration = query.has('iteration') ? Number(query.get('iteration')) : null;
+        const result = reportReader ? await reportReader({index, revision, iteration, options}) : {
           kind: 'report', message: 'Saved loop report.', text: `${current.projection.tasks[index].issue} full report\nCheck full: not_run — CI pending`,
         };
         return {ok: true, json: async () => ({revision, task: index, identity, ...result})};
@@ -467,4 +468,83 @@ test('stale discovery clears saved success while diagnostics are fetched and sel
   diagnostics({kind: 'diagnostics', message: 'Unverified snapshot', text: 'DEV-8 stale guidance'}); await settle();
   assert.equal(h.action('Copy diagnostics').disabled, false);
   assert.equal(h.reportText().value, 'DEV-8 stale guidance');
+});
+
+function retainedTask() {
+  const value = task('DEV-7', 'Alpha', 'escalated', 'fixes');
+  value.loop = {...value.loop, run_id: 'current-run', passes: 1, reviews: 1};
+  value.contexts.review = {context_id: 'DEV-7-R2', state: 'active'};
+  value.review = {state: 'findings', acceptance: 'absent'};
+  value.earlier_iterations = {state: 'available', message: 'Up to 3 earlier iterations retained; not lifetime totals.', entries: [
+    {order: 1, run_id: 'prior-run', evidence: 'verified', state: 'clean', passes: 6, reviews: 3,
+      implementation_context: 'DEV-7-I1', reviewer_context: 'DEV-7-R1', reason: 'Independent review completed cleanly', report_available: true},
+  ]};
+  return value;
+}
+
+test('current counts and guidance stay separate from historical outcomes and copyable reports', async () => {
+  const h = harness(snapshot([retainedTask()]), async ({iteration}) => iteration === null
+    ? {kind: 'report', message: 'Current iteration', text: 'Current R2 findings F4'}
+    : {kind: 'report', prior_run_id: 'prior-run', message: 'Historical guidance does not apply to current work.', text: 'R1: 6 passes / 3 reviews\nCheck full: not_run'});
+  await settle();
+  const detail = h.ids['task-detail'];
+  assert.match(detail.textContent, /Current iteration.*1 passes · 1 reviews/);
+  assert.match(detail.textContent, /Earlier iterations.*DEV-7-R1 · Clean \(historical\).*6 passes · 3 reviews/);
+  assert.match(detail.textContent, /Canonical guidance for DEV-7/);
+  assert.match(detail.textContent, /ReviewFindingsAcceptance: Absent/);
+  assert.equal(h.reportText().value, 'Current R2 findings F4');
+  h.action('Inspect report · DEV-7-R1').click(); await settle();
+  assert.match(h.calls.at(-1).url, /&iteration=0$/);
+  assert.match(detail.textContent, /Earlier iteration report · DEV-7-R1/);
+  h.action('Copy report').click(); await settle();
+  assert.equal(h.clipboard.at(-1), 'R1: 6 passes / 3 reviews\nCheck full: not_run');
+  h.action('Show current report').click(); await settle();
+  assert.equal(h.reportText().value, 'Current R2 findings F4');
+  assert.doesNotMatch(h.calls.at(-1).url, /iteration=/);
+});
+
+test('missing or partial historical evidence is never displayed as clean or copyable', async () => {
+  const value = retainedTask();
+  value.earlier_iterations.entries[0] = {order: 1, run_id: null, evidence: 'unavailable', state: 'unknown',
+    passes: null, reviews: null, report_available: false};
+  const h = harness(snapshot([value])); await settle();
+  assert.match(h.ids['task-detail'].textContent, /Reviewer unavailable · Unknown \(historical\)/);
+  assert.match(h.ids['task-detail'].textContent, /Counts unavailable/);
+  assert.equal(h.action('Inspect report · 1').disabled, true);
+});
+
+test('historical report races, pruning and mismatched run identities never substitute reports', async () => {
+  const pending = deferred();
+  const value = retainedTask();
+  const h = harness(snapshot([value]), async ({iteration}) => iteration === null
+    ? {kind: 'report', message: 'Current', text: 'R2 report'} : pending.promise);
+  await settle();
+  h.action('Inspect report · DEV-7-R1').click(); await settle();
+  h.action('Show current report').click(); await settle();
+  pending.resolve({kind: 'report', prior_run_id: 'prior-run', message: 'Historical', text: 'R1 report'});
+  await settle();
+  assert.equal(h.reportText().value, 'R2 report');
+  h.reportReader(async () => ({kind: 'report', prior_run_id: 'wrong-run', message: 'Wrong', text: 'UNVERIFIED REPORT'}));
+  h.action('Inspect report · DEV-7-R1').click(); await settle();
+  assert.doesNotMatch(h.reportText().value, /UNVERIFIED REPORT/);
+  const removed = structuredClone(value); removed.earlier_iterations.entries = [];
+  const updated = snapshot([removed]); updated.revision = 2;
+  h.update(updated); await settle();
+  assert.equal(h.reportText().value, '');
+  assert.equal(h.action('Copy report').disabled, true);
+  assert.match(h.ids['task-detail'].textContent, /Earlier iteration report unavailable/);
+});
+
+test('returning from a retained report uses the latest current iteration snapshot', async () => {
+  const h = harness(snapshot([retainedTask()]), async ({iteration}) => iteration === null
+    ? {kind: 'report', message: 'Current', text: 'Current report'}
+    : {kind: 'report', prior_run_id: 'prior-run', message: 'Historical', text: 'Prior report'});
+  await settle();
+  h.action('Inspect report · DEV-7-R1').click(); await settle();
+  const changed = retainedTask(); changed.loop.passes = 4;
+  const next = snapshot([changed]); next.revision = 2;
+  h.update(next); await settle();
+  h.action('Show current report').click(); await settle();
+  assert.match(h.ids['task-detail'].textContent, /4 passes · 1 reviews/);
+  assert.equal(h.reportText().value, 'Current report');
 });

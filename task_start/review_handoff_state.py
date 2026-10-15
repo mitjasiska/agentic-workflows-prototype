@@ -22,6 +22,54 @@ from .sessions import merge_session
 from .workspace import Git
 
 
+def standalone_current(review, loop):
+    """Consumption/checkpoint provenance orders reviews, never context labels or time."""
+    if not review:
+        return False
+    if not loop:
+        return review['consumed'] is None
+    result = review['result']
+    matches = [r for r in loop['records'] if result and r['pass_id'] == result['pass_id']]
+    if matches:
+        if (len(matches) != 1 or matches[0]['phase'] not in {'review', 'rereview'}
+                or any(matches[0][k] != result[k] for k in ('state', 'summary', 'context_id', 'findings', 'checks'))
+                or review['consumed'] not in {None, loop['run_id']}
+                or review['origin'] is not None and review['origin']['run_id'] != loop['run_id']):
+            raise TaskError('Standalone review conflicts with its checkpointed result')
+        return False  # Includes checkpoint-first adoption before consumption was saved.
+    if review['consumed'] == loop['run_id']:
+        raise TaskError('Consumed review is missing from its owning checkpoint')
+    return review['consumed'] is None and (review['origin'] or {}).get('run_id') == loop['run_id']
+
+
+def verify_review_evidence(accepted, loop, review):
+    """Reconcile an acceptance with any retained outcomes for that exact pass."""
+    def clean(result):
+        return (result['state'] == 'clean' and result['context_id'] == accepted['context_id']
+                and not result['findings'] and not any(c['result'] == 'failed' for c in result['checks']))
+
+    if loop:
+        for record in loop['records']:
+            if record['pass_id'] == accepted['pass_id']:
+                reviewer = loop['reviewer']
+                if (record['phase'] not in {'review', 'rereview'} or not clean(record) or not reviewer
+                        or reviewer['context_id'] != accepted['context_id']
+                        or reviewer['session'] != accepted['session']
+                        or accepted['pass_kind'] != ('resumed' if record['phase'] == 'rereview' else 'fresh')
+                        or loop['snapshot'] != accepted['review_state']
+                        or dict(kind=reviewer['agent'], model=reviewer['model'], mode=reviewer['mode']) != accepted['execution']):
+                    raise TaskError('Acceptance conflicts with its saved loop review')
+    if review and review['result'] and review['result']['pass_id'] == accepted['pass_id']:
+        result, reviewer = review['result'], review['reviewer']
+        if (not clean(result) or result['invalidated'] or not reviewer
+                or any(result[k] != accepted[k] for k in ('context_id', 'pass_kind', 'execution', 'review_state'))
+                or review['snapshot'] != accepted['review_state']
+                or result['post_fingerprint'] != accepted['review_state']['fingerprint']
+                or reviewer['context_id'] != accepted['context_id'] or reviewer['session'] != accepted['session']
+                or dict(kind=reviewer['agent'], model=reviewer['model'], mode=reviewer['mode']) != accepted['execution']):
+            raise TaskError('Acceptance conflicts with its saved standalone review')
+
+
 def task_binding(env):
     return dict(issue=env.issue.identifier, repository=str(env.repo), worktree=str(env.workspace.path),
                 branch=env.workspace.branch, workspace_id=env.workspace.workspace_id, endpoint=env.endpoint,

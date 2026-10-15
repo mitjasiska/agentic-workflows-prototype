@@ -857,6 +857,19 @@ def _loop(identifier, *, action, agent_kind, model, mode, max_reviews, max_passe
                     guard_review_first_replacement(previous)
                 if previous["status"] == "aborting":
                     raise TaskError("Abort reconciliation is pending; rerun --abort before --new")
+                # Replacement would orphan the acceptance needed by pr recovery.
+                # Check under the same lock as publication, before retaining or
+                # replacing the checkpoint (and before any new pass can revoke it).
+                saved = publication.read()
+                if saved["rebase"] is not None and saved["rebase"].get("result") is None:
+                    raise TaskError(f"Unpublished rebase is pending; rerun {command_name()} pr before --new")
+                prepare_review_continuation(saved, Git(env.workspace.path),
+                    {k: previous["binding"][k] for k in ("issue", "repository", "worktree", "branch", "base_branch")}, env.base)
+                history = saved["publication_history"]
+                if saved["intent"] is not None and (history is None
+                        or history["cycles"][-1]["intent"] != saved["intent"]
+                        or history["cycles"][-1]["acceptance"] != saved["acceptance"]):
+                    raise TaskError(f"Publication is unfinished; rerun {command_name()} pr before --new to preserve its original intent")
                 if (previous["status"] != "aborted" and retained and retained["consumed"] is None
                         and ReviewHandoffStore(env.workspace.path).consume(previous)):
                     return report(*store.read())

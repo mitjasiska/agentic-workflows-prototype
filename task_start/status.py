@@ -17,12 +17,12 @@ from .command import command_name
 from .config import load_projects, status_projects_root
 from .contexts import ContextRegistry, HerdrContexts, context_reference
 from .integration_state import IntegrationStore
-from .loop_state import LoopStore
+from .loop_state import LoopStore, ITERATION_LIMIT, ITERATION_BYTES
 from .pass_delivery import check_directory, object_digest
 from .publication_rebase import validate_commits, validate_record as validate_rebase
 from .publication_state import PublicationStore, verify_publication_history
 from .publish import verify_acceptance, verify_commit
-from .review_handoff_state import ReviewHandoffStore
+from .review_handoff_state import ReviewHandoffStore, standalone_current, verify_review_evidence
 from .review_result import publication_fingerprint
 from .review_state import snapshot
 from .sessions import merge_session
@@ -125,54 +125,6 @@ def context_binding(saved, contexts, binding, role, *, worktree=None, abandoned=
                 or any(context[k] != saved[k] for k in ('agent', 'model', 'mode'))):
             raise TaskError('Context session changed')
     return context
-
-
-def standalone_current(review, loop):
-    """Consumption/checkpoint provenance orders reviews, never context labels or time."""
-    if not review:
-        return False
-    if not loop:
-        return review['consumed'] is None
-    result = review['result']
-    matches = [r for r in loop['records'] if result and r['pass_id'] == result['pass_id']]
-    if matches:
-        if (len(matches) != 1 or matches[0]['phase'] not in {'review', 'rereview'}
-                or any(matches[0][k] != result[k] for k in ('state', 'summary', 'context_id', 'findings', 'checks'))
-                or review['consumed'] not in {None, loop['run_id']}
-                or review['origin'] is not None and review['origin']['run_id'] != loop['run_id']):
-            raise TaskError('Standalone review conflicts with its checkpointed result')
-        return False  # Includes checkpoint-first adoption before consumption was saved.
-    if review['consumed'] == loop['run_id']:
-        raise TaskError('Consumed review is missing from its owning checkpoint')
-    return review['consumed'] is None and (review['origin'] or {}).get('run_id') == loop['run_id']
-
-
-def verify_review_evidence(accepted, loop, review):
-    """Reconcile an acceptance with any retained outcomes for that exact pass."""
-    def clean(result):
-        return (result['state'] == 'clean' and result['context_id'] == accepted['context_id']
-                and not result['findings'] and not any(c['result'] == 'failed' for c in result['checks']))
-
-    if loop:
-        for record in loop['records']:
-            if record['pass_id'] == accepted['pass_id']:
-                reviewer = loop['reviewer']
-                if (record['phase'] not in {'review', 'rereview'} or not clean(record) or not reviewer
-                        or reviewer['context_id'] != accepted['context_id']
-                        or reviewer['session'] != accepted['session']
-                        or accepted['pass_kind'] != ('resumed' if record['phase'] == 'rereview' else 'fresh')
-                        or loop['snapshot'] != accepted['review_state']
-                        or dict(kind=reviewer['agent'], model=reviewer['model'], mode=reviewer['mode']) != accepted['execution']):
-                    raise TaskError('Acceptance conflicts with its saved loop review')
-    if review and review['result'] and review['result']['pass_id'] == accepted['pass_id']:
-        result, reviewer = review['result'], review['reviewer']
-        if (not clean(result) or result['invalidated'] or not reviewer
-                or any(result[k] != accepted[k] for k in ('context_id', 'pass_kind', 'execution', 'review_state'))
-                or review['snapshot'] != accepted['review_state']
-                or result['post_fingerprint'] != accepted['review_state']['fingerprint']
-                or reviewer['context_id'] != accepted['context_id'] or reviewer['session'] != accepted['session']
-                or dict(kind=reviewer['agent'], model=reviewer['model'], mode=reviewer['mode']) != accepted['execution']):
-            raise TaskError('Acceptance conflicts with its saved standalone review')
 
 
 def retained_observation(state, contexts, binding):
@@ -289,7 +241,68 @@ def empty_task(issue, repo, path, projects, root):
         review=dict(state='not_recorded', acceptance='absent', context_id=None, pass_id=None),
         integration=None, publication=dict(state='not_recorded', head=None, pull_number=None, repository=None,
                                           merge='not_observed', current_acceptance_published=False),
-        cleanup=[], uncertainties=[], history=dict(limit=HISTORY_LIMIT, ordering='source_order', truncated=False, entries=[]))
+        cleanup=[], uncertainties=[], earlier_iterations=unavailable_iterations(),
+        history=dict(limit=HISTORY_LIMIT, ordering='source_order', truncated=False, entries=[]))
+
+
+def unavailable_iterations():
+    return dict(state='unavailable', limit=ITERATION_LIMIT, max_bytes=ITERATION_BYTES,
+                ordering='oldest_first', entries=[],
+                message='Earlier iterations unavailable. Runs discarded before retention cannot be reconstructed.')
+
+
+def project_iterations(store, loop, binding, contexts, *, report_request=None):
+    """Historical failures affect only this projection, never current guidance."""
+    result = unavailable_iterations()
+    try:
+        retained = store.iterations()
+        if not retained:
+            return result
+        entries, reports = [], {}
+        for item in retained:
+            entry = dict(order=item['order'], evidence='unavailable', run_id=None,
+                         state='unknown', passes=None, reviews=None, implementation_context=None,
+                         reviewer_context=None, reason=None, report_available=False)
+            try:
+                summary, checkpoint = item['summary'], item['checkpoint']
+                if not summary or summary['run_id'] == loop['run_id']:
+                    raise TaskError('Invalid prior identity')
+                exact_binding(summary['binding'], binding)
+                for key, role in (('implementation', 'implementation'), ('reviewer', 'review')):
+                    saved = (checkpoint[key] if checkpoint else
+                             dict(context_id=summary[key + '_context']) if summary[key + '_context'] else None)
+                    if saved:
+                        context_binding(saved, contexts, binding, role, abandoned=True)
+                entry.update({k: v for k, v in summary.items() if k not in {'binding', 'state'}})
+                entry['evidence'] = 'partial'
+                if checkpoint:
+                    try:
+                        if checkpoint['status'] == 'aborted':
+                            archive = store.abort_journal(checkpoint['run_id'])
+                            if (not archive or archive['original']['binding'] != checkpoint['binding']
+                                    or archive['original']['active_pass'] != checkpoint['abandonment']['claim']
+                                    or archive['timestamp'] != checkpoint['abandonment']['timestamp']):
+                                raise TaskError('Missing historical abandonment proof')
+                        validate_loop_report(checkpoint)
+                    except READ_ERRORS:
+                        pass  # Unfiltered failure prose is never displayed.
+                    else:
+                        entry.update(evidence='verified', state=summary['state'], reason=checkpoint['reason'], report_available=True)
+                        if report_request and report_request.get('prior_run_id') == summary['run_id']:
+                            reports[summary['run_id']] = render_loop_report(checkpoint, item['pause'])
+            except READ_ERRORS:
+                pass
+            entries.append(entry)
+        if store.iterations() != retained:
+            return result
+        result.update(state='available' if all(e['evidence'] == 'verified' for e in entries) else 'partial',
+                      entries=entries,
+                      message=f'Up to {ITERATION_LIMIT} earlier iterations retained. Older or pre-feature runs may be unavailable; these are not lifetime totals.')
+        if report_request and report_request.get('prior_run_id') in reports:
+            report_request['text'] = reports[report_request['prior_run_id']]
+    except READ_ERRORS:
+        pass
+    return result
 
 
 def read_task(issue, repo, path, contexts, registry, projects, root, discovery, entries, endpoint, herdr_factory,
@@ -460,7 +473,7 @@ def _read_task(issue, repo, path, contexts, registry, projects, root, discovery,
                     'integration', worktree=integration['checkout'])
             if current_review and review.get('reviewer'):
                 selected['review'] = context_binding(review['reviewer'], contexts, binding, 'review')
-            if saved and saved['acceptance']:
+            if saved and saved['acceptance'] and (not loop or current_review):
                 accepted_context = context_binding(dict(context_id=saved['acceptance']['context_id']),
                                                    contexts, binding, 'review')
                 selected.setdefault('review', accepted_context)
@@ -474,6 +487,8 @@ def _read_task(issue, repo, path, contexts, registry, projects, root, discovery,
         problem(errors, 'integration', 'Active integration context lacks matching task-local provenance.')
     for role in ('implementation', 'review', 'integration'):
         choices = [c for c in active or related if c['role'] == role]
+        if role == 'review' and loop and not loop['reviewer'] and not current_review:
+            choices = []  # Earlier reviewers are historical, not the pending first reviewer.
         if role not in selected and len(choices) == 1:
             selected[role] = choices[0]
         elif role not in selected and len(choices) > 1:
@@ -582,7 +597,7 @@ def _read_task(issue, repo, path, contexts, registry, projects, root, discovery,
         except READ_ERRORS:
             problem(errors, 'publication', 'Publication/integration evidence cannot be validated; no delivery or authorization is inferred.')
             task['publication']['state'] = 'unknown'
-        if accepted:
+        if accepted and (not loop or current_review or any(r['pass_id'] == accepted.get('pass_id') for r in loop['records'])):
             task['review']['acceptance'] = 'unverified'
             if task['review']['pass_id'] is None:
                 task['review'].update(context_id=accepted.get('context_id'), pass_id=accepted.get('pass_id'))
@@ -593,7 +608,7 @@ def _read_task(issue, repo, path, contexts, registry, projects, root, discovery,
                 try:
                     verify_acceptance(accepted, SimpleNamespace(identifier=issue), SimpleNamespace(base_branch=binding['base_branch']),
                         Path(repo), SimpleNamespace(path=Path(path), branch=binding['branch'], workspace_id=binding['workspace_id']),
-                        binding['endpoint'], registry)
+                        binding['endpoint'], registry, iteration_evidence=(loop, review))
                 except TaskError:
                     raise InvalidAcceptance('Review context does not match acceptance') from None
                 pinned = accepted['review_state']
@@ -724,7 +739,11 @@ def _read_task(issue, repo, path, contexts, registry, projects, root, discovery,
         except TaskError:
             pass
     task['guidance'] = guidance(task, observable, blocked_retry, extension)
-    if (loop_report is not None and loop and task['workspace']['registration'] == 'registered'
+    if (loop and store and task['workspace']['registration'] == 'registered'
+            and not any(e['code'] in {'checkout', 'binding', 'workspace', 'discovery', 'project', 'changed'} for e in errors)):
+        task['earlier_iterations'] = project_iterations(loop_store, loop, binding, contexts, report_request=loop_report)
+    if (loop_report is not None and not loop_report.get('prior_run_id')
+            and loop and task['workspace']['registration'] == 'registered'
             and not any(e['code'] not in {'controller', 'observation', 'selection'} for e in errors)
             and task['state'] != 'stale_review'
             and (loop['status'] != 'clean' or task['review']['acceptance'] == 'valid')):
@@ -839,9 +858,8 @@ def report_identity(task):
             for key in ('path', 'branch', 'workspace_id', 'endpoint')))
 
 
-def render_loop_report(state, pause):
+def validate_loop_report(state):
     from .implementation_pass import parse_implementation
-    from .loop import report
     from .review_result import parse_verdict
 
     # Controller exceptions and failed review primitives can persist arbitrary
@@ -868,6 +886,11 @@ def render_loop_report(state, pause):
                 value['task_assessment'] = record['task_assessment']
             parse_implementation(json.dumps(value), record['pass_id'], findings,
                                  assessment_enabled='task_assessment' in record)
+
+
+def render_loop_report(state, pause):
+    from .loop import report
+    validate_loop_report(state)
     return report(state, pause).render()
 
 
@@ -888,13 +911,16 @@ def unavailable_report(message, task=None, discovery=None):
                 text='\n'.join(lines) if len(lines) > 1 else None)
 
 
-def task_loop_report(selected, **kwargs):
+def task_loop_report(selected, *, prior_run_id=None, **kwargs):
     """Read a server-selected execution through canonical identity validation.
 
     selected must come from the dashboard's status cache, never client paths.
     No registry/checkpoint writes, provider history reads, or loop control calls.
     """
-    rendered = {}
+    if prior_run_id is not None and not any(e['run_id'] == prior_run_id and e['report_available']
+            for e in selected.get('earlier_iterations', {}).get('entries', [])):
+        return unavailable_report('Earlier iteration report unavailable: refresh the retained selection.')
+    rendered = dict(prior_run_id=prior_run_id)
     status = _task_status(selected['issue'], report_target=selected, loop_report=rendered, **kwargs).as_dict()
     matches = [task for task in status['tasks'] if report_identity(task) == report_identity(selected)]
     if len(matches) != 1:
@@ -904,9 +930,14 @@ def task_loop_report(selected, **kwargs):
     if status['discovery']['state'] != 'available':
         return unavailable_report('Task report unavailable: discovery is unverified; refresh before using recorded guidance.',
                                   task, status['discovery'])
+    if prior_run_id is None and task['loop'] and task['loop']['run_id'] != (selected.get('loop') or {}).get('run_id'):
+        return unavailable_report('Current iteration changed; refresh before inspecting its report.')
     if 'text' in rendered:
-        return dict(kind='report', message='Saved loop report (CLI format). Recorded outcomes do not prove current agent activity.',
+        return dict(kind='report', message=('Earlier iteration report (CLI format). Historical guidance and acceptance do not apply to the current iteration.'
+                    if prior_run_id else 'Saved loop report (CLI format). Recorded outcomes do not prove current agent activity.'),
                     text=rendered['text'])
+    if prior_run_id:
+        return unavailable_report('Earlier iteration report unavailable: retained evidence is missing, partial, or unverified.')
     missing = task['loop'] is None and not task['uncertainties']
     return unavailable_report('No saved loop report exists for this task.' if missing else
                               'Task report unavailable: saved evidence is unreadable, stale, or cannot be verified.', task)
@@ -936,6 +967,14 @@ def render_status(value):
             lines.append(f"  Conditional option: {option['command']}. {option['message']}")
         lines.extend('  Uncertain: ' + e['message'] for e in task['uncertainties'])
         if value['selection'] == 'issue':
+            if task['loop']:
+                lines.append(f"  Current iteration: {task['loop']['run_id']} — {task['loop']['passes']} passes / {task['loop']['reviews']} reviews")
+            earlier = task['earlier_iterations']
+            lines.append('  Earlier iterations: ' + earlier['message'])
+            for entry in earlier['entries']:
+                lines.append(f"    {entry['run_id'] or 'unavailable'}: {entry['state']} — "
+                             f"{entry['passes']} passes / {entry['reviews']} reviews; "
+                             f"{entry['implementation_context']} / {entry['reviewer_context']}; evidence: {entry['evidence']}")
             lines.append('  Saved history (ordered within each source; missing timestamps remain unknown):')
             lines.extend(f"    {e['source']}: {e['phase'] or 'boundary'} / {e['state']}"
                          + (f" [{e['context_id']}]" if e['context_id'] else '') for e in task['history']['entries'])

@@ -11,6 +11,7 @@ let fetching = false;
 let fetchError = false;
 let live = false;
 let reportView = null;
+let selectedIteration = null;
 let reportRequest = 0;
 let reportController = null;
 const byId = (id) => document.getElementById(id);
@@ -98,7 +99,7 @@ function clearReport() {
 }
 function reportArea(task) {
   const key = taskKey(task);
-  if (reportView?.key === key) return reportView.area;
+  if (reportView?.key === key && reportView.runId === selectedIteration) return reportView.area;
   clearReport();
   const area = node('section', null, 'detail-section task-report');
   const message = node('p', 'Loading saved report…', 'muted');
@@ -121,9 +122,20 @@ function reportArea(task) {
   text.dataset.focusKey = `report:${key}:text`;
   details.append(text);
   actions.append(copy, select);
-  area.prepend(node('h3', 'Task report'), message, actions, feedback);
+  const prior = task.earlier_iterations?.entries.find((entry) => entry.run_id === selectedIteration);
+  area.prepend(node('h3', selectedIteration ? `Earlier iteration report · ${prior?.reviewer_context || selectedIteration}` : 'Current iteration report'), message, actions, feedback);
+  if (selectedIteration) {
+    const current = node('button', 'Show current report');
+    current.type = 'button';
+    current.addEventListener('click', () => {
+      selectedIteration = null;
+      renderDetail(snapshot?.projection?.tasks?.find((item) => taskKey(item) === key));
+      refreshReport();
+    });
+    actions.append(current);
+  }
   // The disclosure and textarea survive same-task renders, preserving selection.
-  const view = {key, area, message, copy, select, feedback, details, text, data: null, loading: true, copyOperation: null};
+  const view = {key, runId: selectedIteration, area, message, copy, select, feedback, details, text, data: null, loading: true, copyOperation: null};
   reportView = view;
   select.addEventListener('click', () => {
     if (reportView !== view || view.loading || !view.data?.text) return;
@@ -194,6 +206,11 @@ async function refreshReport() {
     return;
   }
   const revision = snapshot.revision;
+  const iteration = view.runId ? task.earlier_iterations?.entries.findIndex((entry) => entry.run_id === view.runId && entry.report_available) : null;
+  if (view.runId && (iteration == null || iteration < 0)) {
+    showReport(view, {kind: 'unavailable', text: null, message: 'Earlier iteration report unavailable. Its retained evidence is missing or unverified.'});
+    return;
+  }
   if (snapshot.stale || view.revision !== revision) showReport(view, {kind: 'unavailable', text: null, message: 'Checking available report…'});
   view.revision = revision;
   view.loading = true;
@@ -203,10 +220,11 @@ async function refreshReport() {
   reportController = controller;
   const timeout = setTimeout(() => controller.abort(), 10000);
   try {
-    const response = await fetch(`/api/report?revision=${revision}&task=${index}`, {cache: 'no-store', signal: controller.signal});
+    const response = await fetch(`/api/report?revision=${revision}&task=${index}${view.runId ? `&iteration=${iteration}` : ''}`, {cache: 'no-store', signal: controller.signal});
     if (!response.ok) throw new Error('Report unavailable');
     const data = await response.json();
     if (data.revision !== revision || data.task !== index || JSON.stringify(data.identity) !== view.key
+        || (data.prior_run_id || null) !== view.runId
         || !['report', 'diagnostics', 'unavailable'].includes(data.kind)
         || typeof data.message !== 'string' || (data.text !== null && typeof data.text !== 'string')) throw new Error('Unverified report');
     if (reportView === view && request === reportRequest) showReport(view, data);
@@ -220,6 +238,7 @@ async function refreshReport() {
 function renderDetail(task) {
   const detail = byId('task-detail');
   const sameTask = task && detail.dataset.taskKey === taskKey(task);
+  if (!sameTask) selectedIteration = null;
   const openSections = new Set(sameTask ? [...detail.querySelectorAll('details')].filter((item) => item.open).map((item) => item.dataset.sectionKey) : []);
   detail.replaceChildren();
   detail.dataset.taskKey = task ? taskKey(task) : '';
@@ -233,6 +252,7 @@ function renderDetail(task) {
   const heading = node('div', null, 'detail-heading');
   heading.append(node('h2', task.issue), badge(task.state, task.phase));
   detail.append(heading);
+  detail.append(node('h3', 'Current iteration'));
   const activity = node('section', null, 'activity');
   const phase = node('div');
   phase.append(node('p', 'Current phase', 'eyebrow'), node('h3', label(task.phase)));
@@ -258,6 +278,29 @@ function renderDetail(task) {
     for (const error of task.uncertainties) warnings.append(node('p', error.message));
   }
   detail.append(reportArea(task));
+  const earlier = section(detail, 'Earlier iterations');
+  earlier.append(node('p', task.earlier_iterations?.message || 'Earlier iterations unavailable. Discarded runs cannot be reconstructed.', 'muted'));
+  for (const entry of task.earlier_iterations?.entries || []) {
+    const item = node('div', null, 'iteration');
+    item.append(node('h4', `${entry.reviewer_context || 'Reviewer unavailable'} · ${label(entry.state)} (historical)`),
+      node('p', entry.passes == null ? 'Counts unavailable' : `${entry.passes} passes · ${entry.reviews} reviews`),
+      node('p', `${entry.implementation_context || 'Implementation unavailable'} / ${entry.reviewer_context || 'Reviewer unavailable'}`),
+      node('p', `Evidence: ${label(entry.evidence)}`, 'muted'),
+      node('p', entry.reason || 'Stop reason/report unavailable from retained evidence.', 'muted'));
+    const ids = disclosure(item, 'Iteration identity', `iteration:${entry.run_id || entry.order}`);
+    ids.append(node('p', `Run: ${entry.run_id || 'unavailable'} · order: ${entry.order} · evidence: ${entry.evidence}`));
+    const inspect = node('button', `Inspect report · ${entry.reviewer_context || entry.order}`);
+    inspect.type = 'button';
+    inspect.disabled = !entry.report_available;
+    inspect.addEventListener('click', () => {
+      selectedIteration = entry.run_id;
+      renderDetail(task);
+      reportView.area.scrollIntoView({block: 'nearest'});
+      refreshReport();
+    });
+    item.append(inspect);
+    earlier.append(item);
+  }
   const statuses = node('div', null, 'status-grid');
   statusCard(statuses, 'Review', task.review.state, `Acceptance: ${label(task.review.acceptance)}`);
   statusCard(statuses, 'Integration', task.integration?.state || 'not_recorded', task.integration?.context_id ? 'Agent context recorded' : 'No selected integration context');

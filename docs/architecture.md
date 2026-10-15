@@ -59,8 +59,10 @@ The same agent assesses and implements in one turn; the controller validates and
 reports the structured outcome through the existing implementation result and
 checkpoint. It does not classify issue quality or create an assessment phase.
 [`loop_state.py`](../task_start/loop_state.py) serializes private checkpoint and
-pause updates; it does not store a run archive or choose models. The controller
-holds the existing publication lock and calls the review primitive within that
+pause updates, including atomic retention of up to three superseded iterations'
+bounded result evidence during permitted replacement. Historical evidence is
+separate from the checkpoint reader used by controllers. The controller holds
+the existing publication lock and calls the review primitive within that
 ownership. [`pass_delivery.py`](../task_start/pass_delivery.py) retains one private
 pass result destination and completion seal. Adapters persist a session-bound
 prompt digest before delivery and verify the exact provider completion receipt.
@@ -123,12 +125,18 @@ restart; clients recover through `GET /api/snapshot`, never event replay.
 `GET /api/report?revision=N&task=INDEX` resolves one execution from that exact
 cached snapshot. It accepts no filesystem selector, rechecks canonical task and
 checkpoint identity, and renders the verified checkpoint with `LoopResult.render()`.
+An optional `&iteration=INDEX` selects an earlier iteration from that same cached
+task. The server resolves its retained run ID, verifies its original task/context
+bindings and result evidence, and echoes that ID for client verification. Missing,
+pruned, changed or invalid evidence never falls back to the current report.
 At most two report reads run concurrently. Complete report text stays out of the
 overview/cache and is fetched only for the selected task. Unverified evidence
 returns safe canonical diagnostics; raw saved controller/review exceptions are
 not reportable. The response carries the selected identity as well as revision
 and index, so clients also reject mismatches across server restarts. Clipboard
 feedback follows the actual write result, with selectable text as a fallback.
+Historical reports preserve the original CLI text, including old guidance, with
+an explicit historical notice. They grant no current routing or publication authority.
 
 The server binds only to `127.0.0.1`, accepts local same-origin reads, exposes fixed
 asset/API routes, and rejects writes. Local-host headers may use another port for

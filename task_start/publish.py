@@ -16,10 +16,12 @@ from .config import load_local, load_projects, repository_path, resolve_project
 from .contexts import ContextRegistry, HerdrContexts, context_reference
 from .github import api_credential, publication_pull, publish_pull, pull_requests, repository_name
 from .linear import Linear
+from .loop_state import LoopStore
 from .publication_state import PublicationStore, verify_publication_history
 from .integration_state import check_integration
 from .publication_rebase import continue_rebase, integration_plan, validate_commits, validate_record
 from .review import resolve_review_workspace
+from .review_handoff_state import ReviewHandoffStore, standalone_current, verify_review_evidence
 from .review_result import publication_fingerprint, publication_metadata
 from .review_state import digest, snapshot, tree_content
 from .sessions import merge_session
@@ -151,7 +153,42 @@ def prepared_index(git):
         yield env, tree, index_digest
 
 
-def verify_acceptance(accepted, issue, project, repo, workspace, endpoint, registry):
+def verify_iteration_acceptance(accepted, worktree, *, evidence=None):
+    """Replacement commits before a new pass can revoke the old acceptance.
+
+    Admit only a checkpointed review of this run or an independently completed
+    standalone review originating in it. Superseded evidence is never consulted.
+    The publication lock also serializes replacement and review controllers.
+    """
+    try:
+        if evidence is None:
+            store = LoopStore(worktree)
+            if not store.path.exists() and not store.path.is_symlink():
+                return  # Standalone/legacy publication keeps its contract.
+            current, _ = store.read()
+            review = None
+        else:
+            # Canonical status supplies its before/after-checked read snapshot.
+            current, review = evidence
+            if current is None:
+                return
+        if any(accepted[k] != v for k, v in current['binding'].items()):
+            raise ValueError('Different loop binding')
+        if any(r['pass_id'] == accepted['pass_id'] for r in current['records']):
+            verify_review_evidence(accepted, current, None)
+            return
+        if evidence is None:
+            review = ReviewHandoffStore(worktree).read()
+        if (not standalone_current(review, current) or not review['result']
+                or review['result']['pass_id'] != accepted['pass_id']
+                or review['binding'] != current['binding']):
+            raise ValueError('Acceptance is not from this iteration')
+        verify_review_evidence(accepted, current, review)
+    except (TaskError, KeyError, ValueError, TypeError, AttributeError):
+        raise TaskError(f"No current clean acceptance belongs to the active loop iteration; run {command_name()} review again") from None
+
+
+def verify_acceptance(accepted, issue, project, repo, workspace, endpoint, registry, *, iteration_evidence=None):
     try:
         if (accepted["version"] != 1 or accepted["verdict"] != "clean"
                 or accepted["issue"] != issue.identifier or accepted["repository"] != str(repo)
@@ -161,6 +198,7 @@ def verify_acceptance(accepted, issue, project, repo, workspace, endpoint, regis
                 or accepted["review_state"]["branch"] != workspace.branch or accepted["review_state"]["version"] != 2
                 or not accepted["completed_at"] or not accepted["pass_id"]):
             raise ValueError("mismatched acceptance")
+        verify_iteration_acceptance(accepted, workspace.path, evidence=iteration_evidence)
         context = registry.get(accepted["context_id"])
         if (context["state"] != "active" or context["role"] != "review" or context["issue"] != issue.identifier
                 or context["repository"] != str(repo) or context["worktree"] != str(workspace.path)
