@@ -1,6 +1,6 @@
 # On-demand worktree browser
 
-AWL's optional Linux browser integration uses one `ab-worktree` interface for
+AWP's optional Linux browser integration uses one `ab-worktree` interface for
 Codex, Pi, and custom shell-capable agents. Browser access is an explicit task
 capability. A repository name or task description never enables it automatically.
 Tasks without opt-in start no Chrome process and need no Node installation or
@@ -8,7 +8,7 @@ browser daemon.
 
 ## One-time user setup
 
-From a stable AWL checkout, run:
+From a stable AWP checkout, run:
 
 ```sh
 python3.12 scripts/install_browser.py
@@ -76,15 +76,15 @@ agents need the helper, its companion, Python 3, Git, `sha256sum`, and `readlink
 only the host needs `agent-browser` and Chrome. Setup never installs system
 libraries, uses `sudo`, changes AppArmor, or edits third-party agent settings.
 
-## AWL task opt-in and identity handoff
+## AWP task opt-in and identity handoff
 
 Run the controller on the host, outside the coding agent's sandbox:
 
 ```sh
-awl start DEV-7 --browser
-awl loop DEV-7 --browser
-awl review DEV-7 --browser
-awl review DEV-7 --resume DEV-7-R1
+awp start DEV-7 --browser
+awp loop DEV-7 --browser
+awp review DEV-7 --browser
+awp review DEV-7 --resume DEV-7-R1
 ```
 
 These are alternative lifecycle entry points, not a sequence to run together.
@@ -95,7 +95,7 @@ starting a new loop requires the existing lifecycle's explicit authorization.
 Browser opt-in is per task execution, never a project-wide configuration default.
 Project agent/model/profile defaults still use the [existing configuration](configuration.md).
 
-Before each browser-dependent handoff, AWL uses the allocated context ID as both
+Before each browser-dependent handoff, AWP uses the allocated context ID as both
 actor ID and instance ID: for example `DEV-7-I1`, `DEV-7-R1`, and `DEV-7-R2`.
 The controller prepares or reuses that exact session on the host and verifies a
 snapshot. It then supplies the absolute helper path, exact identity, private
@@ -132,7 +132,7 @@ ab-worktree custom --instance task7-sub1 --actor task7-sub1 --connect-only snaps
 ```
 
 For a different runtime directory, propagate the exact absolute
-`AWL_BROWSER_RUNTIME_DIR` printed by preparation. AWL also supplies
+`AWL_BROWSER_RUNTIME_DIR` printed by preparation. AWP also supplies
 `AWL_BROWSER_AGENT` and `AWL_BROWSER_ROOT` to reject an agent/worktree mismatch.
 `AWL_BROWSER_INSTANCE` and `AWL_BROWSER_ACTOR` reject conflicting explicit IDs;
 assignments imply connect-only use even if the option is omitted. An environment
@@ -147,7 +147,7 @@ then fail. Reusing an instance with a different actor, or assigning a second ins
 the same actor in that runtime directory, is refused, even after close. Repeated preparation with the same actor/instance means reuse, not a new
 actor; a framework must never assign both IDs to two different actors.
 
-AWL allocates IDs for actors it launches through its context registry. It does
+AWP allocates IDs for actors it launches through its context registry. It does
 not discover or schedule third-party internal subagents. A framework unable to
 supply distinct stable IDs and host preparation must report that limitation and
 block those subagents' browser use. Do not inherit the parent's assignment.
@@ -252,7 +252,7 @@ For Chrome startup failures check its actual executable path, missing shared
 libraries, and kernel/AppArmor user-namespace diagnostics. Downloaded Chrome
 versions can change the executable path. An administrator can diagnose the
 specific attachment using [Ubuntu's user-namespace guidance](https://documentation.ubuntu.com/release-notes/24.04/#unprivileged-user-namespace-restrictions).
-AWL applies no policy changes. It refuses root/container/CI environments where
+AWP applies no policy changes. It refuses root/container/CI environments where
 the supported upstream launcher would automatically add `--no-sandbox`.
 Never disable provider/Chrome sandboxing, widen global permissions, or expose a
 public browser/CDP endpoint to make a check pass.
@@ -327,7 +327,7 @@ never start Chrome in the sandbox, change sandbox policy globally, expose TCP/CD
 or silently select another directory/session.
 
 For an existing managed installation, run `python3.12 scripts/install_browser.py`
-on the host from the updated AWL checkout. Its manifest checks preserve personal
+on the host from the updated AWP checkout. Its manifest checks preserve personal
 wrappers and edited files. Then run the diagnostic's exact `--prepare` command in
 the original browser worktree on the host. This adds proof to the existing owned
 session after verifying its legacy identity; it neither needs checkout edits nor

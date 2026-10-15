@@ -183,7 +183,7 @@ test('stale snapshots keep tasks visible and confirmed removal clears selected d
   assert.match(h.ids.overview.textContent, /unverified/);
   h.update(snapshot([])); await settle();
   assert.equal(h.buttons('tasks').length, 0);
-  assert.match(h.ids.tasks.textContent, /No registered AWL task workspaces/);
+  assert.match(h.ids.tasks.textContent, /No registered AWP task workspaces/);
   assert.match(h.ids['task-detail'].textContent, /no longer in the registered task overview/);
   assert.doesNotMatch(h.ids['task-detail'].textContent, /private-session-id/);
 });

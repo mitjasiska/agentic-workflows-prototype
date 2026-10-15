@@ -146,7 +146,7 @@ class PackagingTests(unittest.TestCase):
         (self.cwd / 'task_start.py').write_text('raise AssertionError("caller module imported")')
 
     def invoke(self, environment, *args):
-        return subprocess.run([str(environment / 'bin/awl'), *args], cwd=self.cwd,
+        return subprocess.run([str(environment / 'bin/awp'), *args], cwd=self.cwd,
                               env=self.env, capture_output=True, text=True, timeout=15)
 
     def python(self, environment, code):
@@ -161,14 +161,88 @@ class PackagingTests(unittest.TestCase):
         self.env['PYTHONPATH'] = str(fixture)
 
     def output_launchers(self):
-        return ((self.normal / 'bin/awl', 'awl'), (self.editable / 'bin/awl', 'awl'),
+        return ((self.normal / 'bin/awp', 'awp'), (self.editable / 'bin/awp', 'awp'),
                 (self.source / 'task', 'task'))
 
     def output_environment(self, name):
         # sitecustomize runs before the source launcher inserts its own directory.
-        # Only legacy task gets this source path; installed awl must use its install.
+        # Only legacy task gets this source path; installed awp must use its install.
         return (dict(self.env, PYTHONPATH=self.env['PYTHONPATH'] + os.pathsep + str(self.source))
                 if name == 'task' else self.env)
+
+    def test_only_awp_is_installed_in_normal_and_editable_environments(self):
+        for environment in (self.normal, self.editable):
+            with self.subTest(environment=environment):
+                self.assertTrue((environment / 'bin/awp').is_file())
+                self.assertFalse(os.path.lexists(environment / 'bin/awl'))
+                entries = self.python(environment, 'from importlib.metadata import distribution; '
+                    'print(sorted((e.name, e.value) for e in distribution("agentic-workflows-lite").entry_points '
+                    'if e.group == "console_scripts"))')
+                self.assertEqual(entries.strip(), "[('awp', 'task_start.cli:awp')]")
+
+    def test_uv_git_and_moved_editable_migration_preserve_unrelated_launchers(self):
+        uv = shutil.which('uv')
+        if uv is None:
+            self.skipTest('uv is needed for isolated tool migration checks')
+        for editable in (False, True):
+            for unrelated in (False, True):
+                with self.subTest(editable=editable, unrelated=unrelated):
+                    root = Path(self.enterContext(tempfile.TemporaryDirectory(dir=self.home)))
+                    source = self.copy_source(root / 'agentic-workflows-lite')
+                    metadata = (source / 'pyproject.toml').read_text()
+                    implementation = (source / 'task_start/cli.py').read_text()
+                    (source / 'pyproject.toml').write_text(metadata.replace('awp = "task_start.cli:awp"',
+                                                                         'awl = "task_start.cli:awl"'))
+                    (source / 'task_start/cli.py').write_text(implementation + '\ndef awl():\n    return main(prog="awl")\n')
+                    self.git(source, 'add', '.')
+                    self.git(source, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                             '-c', 'commit.gpgsign=false', 'commit', '-qm', 'Legacy entry point')
+                    tool_bin = root / 'bin'
+                    tool_env = dict(self.build_env, HOME=str(self.home), UV_TOOL_DIR=str(root / 'tools'),
+                                    UV_TOOL_BIN_DIR=str(tool_bin), UV_CACHE_DIR=str(root / 'cache'),
+                                    UV_PYTHON_DOWNLOADS='never', UV_NO_CONFIG='1')
+                    def tool(*args):
+                        return self.run_command([uv, '--offline', 'tool', *args], env=tool_env)
+                    def install(path):
+                        tool('install', '--python', sys.executable, '--no-build-isolation', '--no-index',
+                             *(['--editable', str(path)] if editable else ['git+' + path.as_uri()]))
+                    install(source)
+                    self.assertTrue((tool_bin / 'awl').is_file())
+                    self.assertFalse(os.path.lexists(tool_bin / 'awp'))
+                    moved = root / 'agentic-workflows-prototype'
+                    source.rename(moved)
+                    tool('uninstall', 'agentic-workflows-lite')
+                    self.assertFalse(os.path.lexists(tool_bin / 'awl'))
+                    # Reinstall metadata at the moved checkout, never reuse the old editable path.
+                    (moved / 'pyproject.toml').write_text(metadata)
+                    (moved / 'task_start/cli.py').write_text(implementation)
+                    self.git(moved, 'add', '.')
+                    self.git(moved, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                             '-c', 'commit.gpgsign=false', 'commit', '-qm', 'Prototype entry point')
+                    sentinel = b'#!/bin/sh\nprintf "unrelated awl\\n"\n'
+                    if unrelated:
+                        (tool_bin / 'awl').write_bytes(sentinel)
+                        (tool_bin / 'awl').chmod(0o755)
+                    install(moved)
+                    listing = tool('list')
+                    self.assertIn('agentic-workflows-lite', listing)
+                    self.assertIn('- awp', listing)
+                    self.assertNotIn('- awl', listing)
+                    for launcher, name in ((tool_bin / 'awp', 'awp'), (moved / 'task', 'task')):
+                        output = self.run_command([launcher, '--help'], env=self.env)
+                        self.assertTrue(output.startswith(f'usage: {name} '), output)
+                    python = root / 'tools/agentic-workflows-lite/bin/python'
+                    registry = self.run_command([python, '-I', '-c',
+                        'from task_start.config import default_project_registry; print(default_project_registry())'],
+                        env=self.env).strip()
+                    self.assertEqual(registry, str(moved / 'config/projects.toml' if editable else self.registry))
+                    self.assertEqual(shutil.which('awp', path=str(tool_bin)), str(tool_bin / 'awp'))
+                    tool('uninstall', 'agentic-workflows-lite')
+                    self.assertFalse(os.path.lexists(tool_bin / 'awp'))
+                    if unrelated:
+                        self.assertEqual((tool_bin / 'awl').read_bytes(), sentinel)
+                    else:
+                        self.assertFalse(os.path.lexists(tool_bin / 'awl'))
 
     def test_installed_recovery_output_and_legacy_identity_beyond_help(self):
         self.inject_output_fixture()
@@ -263,12 +337,12 @@ class PackagingTests(unittest.TestCase):
                 with self.subTest(mode=environment.name, command=command):
                     result = self.invoke(environment, *command, '--help')
                     self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertTrue(result.stdout.startswith('usage: awl ' + ' '.join(command)))
+                    self.assertTrue(result.stdout.startswith('usage: awp ' + ' '.join(command)))
                     self.assertNotIn('task loop ISSUE', result.stdout)
                     self.assertNotIn('usage: task', result.stdout)
             result = self.invoke(environment, 'unknown')
             self.assertEqual(result.returncode, 2)
-            self.assertIn('awl: error:', result.stderr)
+            self.assertIn('awp: error:', result.stderr)
             self.assertFalse((environment / 'bin/task').exists())
 
     def test_installation_preserves_existing_private_and_shell_settings(self):
@@ -312,7 +386,7 @@ print(json.dumps([str(default_project_registry()), load_projects()[0].linear_pro
         for environment in (self.normal, self.editable):
             result = self.invoke(environment, 'start', 'DEV-16', '--no-agent')
             self.assertEqual(result.returncode, 1)
-            self.assertIn(f'awl: Config missing: {self.settings}', result.stderr)
+            self.assertIn(f'awp: Config missing: {self.settings}', result.stderr)
             self.assertNotIn('Traceback', result.stderr)
 
     def test_missing_and_invalid_registries_fail_without_fallback_or_leaks(self):
@@ -326,7 +400,7 @@ print(json.dumps([str(default_project_registry()), load_projects()[0].linear_pro
                 path.unlink()
                 result = self.invoke(environment, 'start', 'DEV-16', '--no-agent')
                 self.assertEqual(result.returncode, 1)
-                self.assertIn(f'awl: Config missing: {path}', result.stderr)
+                self.assertIn(f'awp: Config missing: {path}', result.stderr)
                 for content, message in ((f'secret="{PRIVATE}"\nbroken=[', 'Cannot read valid TOML'),
                                          ('', 'requires a [projects] table'),
                                          ('example_only=true\n' + MAPPING, 'examples are not runtime mappings'),
@@ -396,7 +470,7 @@ print(json.dumps([str(default_project_registry()), load_projects()[0].linear_pro
     def test_installed_dashboard_serves_bundled_assets_from_unrelated_directory(self):
         for environment in (self.normal, self.editable):
             with self.subTest(mode=environment.name):
-                process = subprocess.Popen([environment / 'bin/awl', 'dashboard', '--port', '0'],
+                process = subprocess.Popen([environment / 'bin/awp', 'dashboard', '--port', '0'],
                                            cwd=self.cwd, env=self.env, stdout=subprocess.PIPE,
                                            stderr=subprocess.PIPE, text=True)
                 try:
@@ -458,10 +532,13 @@ print(json.dumps([str(default_project_registry()), load_projects()[0].linear_pro
         entry_points, = (data for name, data in wheel.items() if name.endswith('/entry_points.txt'))
         entries = configparser.ConfigParser()
         entries.read_string(entry_points.decode())
-        self.assertEqual(dict(entries['console_scripts']), {'awl': 'task_start.cli:awl'})
+        self.assertEqual(dict(entries['console_scripts']), {'awp': 'task_start.cli:awp'})
         metadata, = (data for name, data in wheel.items() if name.endswith('/METADATA'))
         metadata = BytesParser().parsebytes(metadata)
         self.assertEqual(metadata['Name'], 'agentic-workflows-lite')
+        self.assertEqual(metadata.get_all('Project-URL'), [
+            'Repository, https://github.com/mitjasiska/agentic-workflows-prototype',
+            'Documentation, https://github.com/mitjasiska/agentic-workflows-prototype#readme'])
         self.assertEqual(metadata['Requires-Python'], '>=3.12')
         self.assertIsNone(metadata['Requires-Dist'])
 

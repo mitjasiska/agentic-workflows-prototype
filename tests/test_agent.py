@@ -81,13 +81,13 @@ class ConfigurationAndInputTests(unittest.TestCase):
 
     def test_codex_repository_profiles_are_explicit_and_exact(self):
         data = {"repositories": {
-            "agentic-workflows-lite": {"profile": "agentic-workflows-lite-trusted"},
+            "agentic-workflows-prototype": {"profile": "agentic-workflows-lite-trusted"},
             "other.repo": {"profile": "other_profile"},
         }}
-        expected = {"agentic-workflows-lite": "agentic-workflows-lite-trusted",
+        expected = {"agentic-workflows-prototype": "agentic-workflows-lite-trusted",
                     "other.repo": "other_profile"}
         self.assertEqual(codex_repository_profiles(data), expected)
-        self.assertEqual(codex_repository_policy(expected, "agentic-workflows-lite"),
+        self.assertEqual(codex_repository_policy(expected, "agentic-workflows-prototype"),
                          {"codex_profile": "agentic-workflows-lite-trusted"})
         self.assertEqual(codex_repository_policy(expected, "unlisted"), {})
 
@@ -113,10 +113,10 @@ class ConfigurationAndInputTests(unittest.TestCase):
             path = Path(directory) / "config.toml"
             base = (f'projects_root = {json.dumps(directory)}\n[linear]\n'
                     'api_key = "placeholder"\n[agent]\nkind = "codex"\n')
-            path.write_text(base + '[codex.repositories."agentic-workflows-lite"]\n'
+            path.write_text(base + '[codex.repositories."agentic-workflows-prototype"]\n'
                             'profile = "agentic-workflows-lite-trusted"\n')
             self.assertEqual(load_local(path).codex_repository_profiles,
-                             {"agentic-workflows-lite": "agentic-workflows-lite-trusted"})
+                             {"agentic-workflows-prototype": "agentic-workflows-lite-trusted"})
             path.write_text(base + '[codex.repositories.repo]\nprofile = "../invalid"\n')
             self.assertEqual(load_local(path, no_agent=True).codex_repository_profiles, {})
 

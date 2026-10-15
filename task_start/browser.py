@@ -50,7 +50,7 @@ def prepare_browser(execution, context, registry):
         registry.enable_browser(context_id, directory)
     helper = which('ab-worktree')
     if not helper:
-        raise TaskError(f'Browser {context_id} opt-in requires ab-worktree on controller PATH; run python3.12 scripts/install_browser.py from an AWL checkout')
+        raise TaskError(f'Browser {context_id} opt-in requires ab-worktree on controller PATH; run python3.12 scripts/install_browser.py from an AWP checkout')
     command = [helper, execution.options.kind, '--instance', context_id, '--actor', context_id]
     try:
         result = run_browser([*command, '--prepare'], cwd=execution.workspace.path,

@@ -74,7 +74,7 @@
   coverage, full-diff review, targeted/adversarial checks, and complete findings
   batches. Explicit local/per-pass requirements and `exhaustive` review remain
   authoritative; see [validation guidance](docs/lifecycle.md#validation-guidance).
-- Follow the canonical [AWL validation policy](docs/lifecycle.md#validation-guidance):
+- Follow the canonical [AWP validation policy](docs/lifecycle.md#validation-guidance):
   ordinary human merges require independent review/approval and passing fast PR
   checks; full regression runs nightly and gates the final release candidate,
   not every merge. Preserve explicit test requirements and report unrun checks

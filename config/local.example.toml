@@ -40,7 +40,7 @@ strategy = "focused_first" # focused_first | exhaustive
 
 # Optional Codex-only override for a repository you explicitly trust. The value
 # names $CODEX_HOME/agentic-workflows-lite-trusted.config.toml; see the README.
-# [codex.repositories."agentic-workflows-lite"]
+# [codex.repositories."agentic-workflows-prototype"]
 # profile = "agentic-workflows-lite-trusted"
 
 # Optional loop wait per pass; CLI/project overrides resolve per field.

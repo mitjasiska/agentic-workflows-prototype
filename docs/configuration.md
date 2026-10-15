@@ -4,7 +4,7 @@
 
 Installation, project mapping, issue structure, task readiness, implementation
 scope, agent selection, review validation, repository permission profiles, and
-GitHub API credentials and SSH-agent setup for the Agentic Workflows Lite (AWL) `awl` CLI.
+GitHub API credentials and SSH-agent setup for the Agentic Workflows Prototype (AWP) `awp` CLI.
 The first public release is a **Developer Preview** for local, single-machine use.
 
 ## Installation and project mapping
@@ -13,8 +13,8 @@ V1 is Linux-only; Windows and macOS are unsupported. See the
 [README setup](../README.md#setup) for prerequisites, Git-source installation with
 uv, upgrade/uninstall commands, editable checkout installation, and first-task setup.
 The distribution is `agentic-workflows-lite`, and its only installed command is
-`awl`. The checkout's `./task` remains a development/compatibility entry point.
-Commands shown as `task` in the deeper guides can be invoked as `awl` with the same
+`awp`. The checkout's `./task` remains a development/compatibility entry point.
+Commands shown as `task` in the deeper guides can be invoked as `awp` with the same
 arguments.
 
 The existing transport compatibility evidence covers Herdr 0.9.1, Codex CLI
@@ -22,8 +22,8 @@ The existing transport compatibility evidence covers Herdr 0.9.1, Codex CLI
 
 ### Herdr Codex session hook
 
-**Lite setup decision:** the native Herdr Codex hook is an optional integration,
-not an unconditional AWL installation prerequisite. Fresh Codex start, review,
+**Prototype setup decision:** the native Herdr Codex hook is an optional integration,
+not an unconditional AWP installation prerequisite. Fresh Codex start, review,
 integration, and loop delivery use the exact readiness marker and Codex provider
 history to establish a thread ID. Explicit follow-ups can use that saved, verified
 ID even when Herdr omits `agent_session`. Neither a pane title nor `READY` alone
@@ -33,7 +33,7 @@ Some features require **matching live Herdr session evidence**:
 
 | Feature | When native `agent_session` is missing |
 | --- | --- |
-| Fresh delivery and exact saved-thread follow-ups | May proceed after provider verification; AWL warns before queuing the task. |
+| Fresh delivery and exact saved-thread follow-ups | May proceed after provider verification; AWP warns before queuing the task. |
 | Context inspection | Reports `session unknown/stale`; this does not erase the saved provider identity. |
 | Interrupted-pass recovery | Refuses uncertain runtime evidence even with a saved thread ID and result. No replay or replacement is permitted. |
 | Automatic closure of a live agent during forced cleanup | Refuses without matching session metadata and independent provider/process/ownership evidence. Quitting the agent and jobs to the original shell remains the manual path. |
@@ -41,7 +41,7 @@ Some features require **matching live Herdr session evidence**:
 Install and **validate reporting in a fresh disposable session** before relying on
 the last two features. The hook can provide this evidence, but installation alone
 is insufficient: the live probe below found different results for Codex's shared
-background server and `--no-daemon` mode. AWL does not install or enable hooks,
+background server and `--no-daemon` mode. AWP does not install or enable hooks,
 change launch mode, or relax recovery/cleanup checks. A conflicting or malformed
 report still fails; a previously observed report disappearing during handoff is
 also an error, not merely a warning. The relevant boundaries are
@@ -71,7 +71,7 @@ Before installation or upgrade, privately back up any existing affected files
 
 `codex: current (v8)` from `herdr integration status` describes the installed
 integration. It does **not** prove hook trust, execution, socket delivery, a
-provider thread ID, or AWL resumability. Recheck version/help after upgrading;
+provider thread ID, or AWP resumability. Recheck version/help after upgrading;
 these paths describe the observed default user configuration, not every custom
 `CODEX_HOME` or managed configuration.
 
@@ -107,7 +107,7 @@ In the probe's Codex UI, use `/status` to obtain its provider session ID and
 `agent_session: {agent: "codex", kind: "id", source: "herdr:codex", value: "<same ID>"}`
 on the same pane, terminal and checkout. `agent: codex`, `idle`, and
 `interactive_ready: true` only establish detection/readiness, not session identity.
-AWL separately verifies provider history and exact delivery receipts.
+AWP separately verifies provider history and exact delivery receipts.
 
 If the field is absent, check the three integration files, enabled/trusted hook
 state, startup warnings, Herdr environment in the launched process, Python
@@ -115,13 +115,13 @@ availability and socket accessibility. Check whether `/status` says **Local
 background server**: the dated probe below did not report identity in that mode.
 On a version whose `codex --help` supports it, a separate disposable
 `codex --no-daemon` invocation is a diagnostic comparison, not a verified repair
-for an active AWL task or a new AWL default. Do not restart a shared server or
+for an active AWP task or a new AWP default. Do not restart a shared server or
 change another task to investigate this.
 
 Installing/approving the hook after a conversation starts does not backfill its
 startup event. Attaching a UI to that existing conversation is not a fresh launch.
 Whether a particular explicit resume emits a usable new report must be checked
-against its exact saved ID; do not assume it repairs missing metadata. AWL's
+against its exact saved ID; do not assume it repairs missing metadata. AWP's
 automatic startup continuation recognizes folder-trust/sign-in menus, not every
 hook-trust screen. Complete hook setup in the disposable session before starting
 task work. If a workflow has already stopped, retain its context/checkpoint and
@@ -191,14 +191,14 @@ regression and release-candidate acceptance remain subject to the
 
 ### Optional browser setup
 
-Run `python3.12 scripts/install_browser.py` from a stable AWL checkout for guided
+Run `python3.12 scripts/install_browser.py` from a stable AWP checkout for guided
 user-level prerequisites and helper installation. Downloads require consent;
 custom shortcuts, personal instructions and browser configurations are preserved.
-Use `awl start ISSUE --browser`, `awl loop ISSUE --browser`, or
-`awl review ISSUE --browser` only for explicitly browser-enabled tasks. The host
+Use `awp start ISSUE --browser`, `awp loop ISSUE --browser`, or
+`awp review ISSUE --browser` only for explicitly browser-enabled tasks. The host
 prepares each allocated actor's exact instance before handoff; agents use the
 supplied connect-only command. This capability is per execution, not inferred
-from project mappings or enabled by repository-wide defaults. Normal AWL users
+from project mappings or enabled by repository-wide defaults. Normal AWP users
 need no Node, Chrome, or browser daemon. See the [browser guide](browser.md) for
 PATH checks, supported versions, subagent identity, runtime permissions and recovery.
 
@@ -207,10 +207,10 @@ PATH checks, supported versions, subagent identity, runtime permissions and reco
 | Mode | Registry location |
 | --- | --- |
 | Non-editable install (wheel or Git URL) | `~/.agentic-workflows-lite/projects.toml` |
-| `./task` in a Git checkout, or `awl` editable from it | Permanent AWL checkout's `config/projects.toml` |
+| `./task` in a Git checkout, or `awp` editable from it | Permanent AWP checkout's `config/projects.toml` |
 
 Selection starts at the loaded Python module, never the caller's working
-directory. If its source root has no `.git` entry, AWL uses the user-private path;
+directory. If its source root has no `.git` entry, AWP uses the user-private path;
 it does not search parent directories, read a sibling `config/projects.toml`, or
 write into site-packages. This also applies to unpacked sources without Git
 metadata. A normal installation remains usable after its build checkout is removed.
@@ -257,10 +257,10 @@ mode = "high"
 
 ## Manual namespace change
 
-The GitHub repository and permanent checkout have been renamed to
-`agentic-workflows-lite`. The `task` command and existing Linear project/team names
-are unchanged. The following guidance applies to older installations still using
-the historical namespace.
+This section describes the historical migration from `.agentic-workflows` to
+`.agentic-workflows-lite`. It is separate from the
+[AWP repository and CLI migration](migration.md), which preserves the current
+runtime namespace and existing Linear project/team names.
 
 `~/.agentic-workflows-lite/config.toml` is the only default global configuration
 path. The historical `~/.agentic-workflows/config.toml` is not read, copied, or
@@ -355,7 +355,7 @@ repository test policy in `AGENTS.md` and CI.
 
 Linear descriptions are user-defined. The optional
 [`create-linear-task` skill](../skills/create-linear-task/SKILL.md) recommends an
-opinionated structure; using that skill or its template is not required by Lite.
+opinionated structure; using that skill or its template is not required by AWP.
 Configure the single collapsed-block convention in the existing machine-local TOML:
 
 ```toml
@@ -488,7 +488,7 @@ submission to resolve the selected model, supported thinking levels, and effecti
 level. It rejects a model/mode pair if Pi would silently clamp it. Model/account
 support is ultimately determined by the selected CLI. Login, repository trust,
 and each agent's own permission settings remain under your control. Although Pi
-itself accepts thinking suffixes such as `model:high`, Agentic Workflows Lite rejects
+itself accepts thinking suffixes such as `model:high`, Agentic Workflows Prototype rejects
 that syntax because Pi may silently clamp it. Keep `model` plain and put every
 thinking choice in workflow `mode`/`--mode` so it follows one validated path.
 
@@ -558,7 +558,7 @@ for CI ownership, human verification, and honest reporting.
 
 ## Codex permissions for trusted repositories
 
-Agentic Workflows Lite does not relax Codex permissions globally. With no repository
+Agentic Workflows Prototype does not relax Codex permissions globally. With no repository
 override, the adapter passes no profile, sandbox, approval, or network option, so
 Codex's active defaults and machine configuration continue to apply. Model and
 reasoning choices are independent of permissions.
@@ -569,7 +569,7 @@ named Codex configuration profile in the machine-local
 `config/projects.toml`, not a checkout or worktree path. For this repository:
 
 ```toml
-[codex.repositories."agentic-workflows-lite"]
+[codex.repositories."agentic-workflows-prototype"]
 profile = "agentic-workflows-lite-trusted"
 ```
 
@@ -585,7 +585,8 @@ sandbox_mode = "workspace-write"
 network_access = true
 ```
 
-This exact combination was verified with Codex CLI 0.157.1. Agentic Workflows Lite
+The profile flags were historically verified with Codex CLI 0.157.1 under the old
+repository selector; this is not live verification of the renamed checkout. AWP
 launches it as `codex --cd WORKTREE --profile agentic-workflows-lite-trusted ...`;
 Codex loads and enforces the profile. `workspace-write` limits writes to the task
 workspace and Codex's temporary roots while keeping protected paths such as
@@ -805,5 +806,5 @@ host fingerprints through your normal trusted process; do not disable host-key
 checking. `ssh-add -l` reporting no identities means load the correct key; inability
 to contact the agent means repair the socket/session environment. If the key is
 loaded but Git fails, inspect key selection, repository access and host trust.
-AWL preserves Git's SSH configuration and reports failed fetch/remote lookup with
+AWP preserves Git's SSH configuration and reports failed fetch/remote lookup with
 SSH-agent recovery guidance. It does not start an agent or manage passphrases.

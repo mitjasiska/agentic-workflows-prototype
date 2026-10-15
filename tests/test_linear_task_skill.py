@@ -125,6 +125,25 @@ def draft(**changes):
 
 
 class LinearTaskSkillTests(unittest.TestCase):
+    def test_private_registry_rename_refreshes_skill_without_changing_linear_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            registry = root / 'projects.toml'
+            installed = root / 'config.local.toml'
+            original = ('[projects.prototype]\nlinear_project="Synthetic Project"\n'
+                        'linear_team="SYNTHETIC"\nrepo_name="agentic-workflows-lite"\nbase_branch="main"\n')
+            registry.write_text(original)
+            installed.write_text(synchronizer.render(registry, private=True))
+            before = preparer.resolve_target(preparer.load_settings(installed), root / 'agentic-workflows-lite', None)
+            registry.write_text(original.replace('repo_name="agentic-workflows-lite"',
+                                                 'repo_name="agentic-workflows-prototype"'))
+            installed.write_text(synchronizer.render(registry, private=True))
+            settings = preparer.load_settings(installed)
+            after = preparer.resolve_target(settings, root / 'agentic-workflows-prototype', None)
+            self.assertEqual(after, replace(before, repo_name='agentic-workflows-prototype'))
+            with self.assertRaisesRegex(preparer.PreparationError, 'exactly one configured'):
+                preparer.resolve_target(settings, root / 'agentic-workflows-lite', None)
+
     def settings(self, **options):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

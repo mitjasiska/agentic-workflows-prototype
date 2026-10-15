@@ -473,7 +473,7 @@ class ExtendTests(unittest.TestCase):
         self.assertIsNone(hint["command"])
         self.assertIn("40 passes/20 reviews", hint["message"])
 
-    def test_cli_controls_selections_help_and_awl_legacy_output(self):
+    def test_cli_controls_selections_help_and_awp_legacy_output(self):
         self.exhausted()
         for flag in ("--new", "--continue", "--retry-review", "--abort", "--status", "--pause-after-current"):
             with self.subTest(flag=flag), patch("sys.stderr", new_callable=io.StringIO):
@@ -484,7 +484,7 @@ class ExtendTests(unittest.TestCase):
                      ["--i-model", "x"], ["--i-mode", "low"]):
             with self.subTest(args=args), patch("sys.stderr", new_callable=io.StringIO):
                 self.assertEqual(cli.main(["loop", "DEV-7", "--extend", "--max-passes", "10", *args]), 1)
-        for prog in ("awl", "task"):
+        for prog in ("awp", "task"):
             with patch("sys.stdout", new_callable=io.StringIO) as output:
                 self.assertEqual(cli.main(["loop", "DEV-7", "--status"], prog=prog), 0)
             self.assertIn(f"{prog} loop DEV-7 --extend --max-passes 10 --max-reviews 5", output.getvalue())
@@ -496,7 +496,7 @@ class ExtendTests(unittest.TestCase):
             self.assertIn("original conversations", output.getvalue())
         self.review_results = [{}]
         with patch("sys.stdout", new_callable=io.StringIO) as output:
-            self.assertEqual(cli.main(["loop", "DEV-7", "--extend", "--max-passes", "10", "--max-reviews", "5", "--json"], prog="awl"), 0)
+            self.assertEqual(cli.main(["loop", "DEV-7", "--extend", "--max-passes", "10", "--max-reviews", "5", "--json"], prog="awp"), 0)
         value = json.loads(output.getvalue())
         self.assertEqual((value["state"], value["passes"], value["reviewer_context"]), ("clean", 8, "DEV-7-R1"))
 

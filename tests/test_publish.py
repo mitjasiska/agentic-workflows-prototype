@@ -16,7 +16,8 @@ from urllib.parse import urlsplit
 
 from task_start import TaskError, cli
 from task_start.github import publication_pull, publish_pull, request as github_request
-from task_start.publish import (change_type, native_git, prepare_metadata, publish, remote_identity, tracking_url)
+from task_start.publish import (change_type, native_git, prepare_metadata, publish, remote_identity, tracking_url,
+                                verify_remote_identity)
 from task_start.publication_state import PublicationStore
 from task_start.review import review
 from task_start.review_result import publication_fingerprint, publication_metadata, publication_summary_limit
@@ -2025,6 +2026,31 @@ if protocol:
 class RemoteIdentityTests(unittest.TestCase):
     setUp = baseline.LocalGitIntegrationTests.setUp
     command = baseline.LocalGitIntegrationTests.command
+
+    def test_prototype_rename_requires_new_destination_and_rejects_old_worktree_override(self):
+        old = 'git@github.com:mitjasiska/agentic-workflows-lite.git'
+        new = 'git@github.com:mitjasiska/agentic-workflows-prototype.git'
+        self.command(self.repo, 'remote', 'set-url', 'origin', old)
+        prior = remote_identity(self.git, 'main', 'dev-114')
+        self.command(self.repo, 'remote', 'set-url', 'origin', new)
+        approved = remote_identity(self.git, 'main', 'dev-114')
+        self.assertEqual(approved, dict(remote='origin', repository='mitjasiska/agentic-workflows-prototype'))
+        with self.assertRaisesRegex(TaskError, 'differs from the approved'):
+            verify_remote_identity(self.git, 'main', 'dev-114', prior)
+        worktree = self.repo.parent / 'prototype-task'
+        self.command(self.repo, 'worktree', 'add', '-b', 'dev-114', str(worktree))
+        verify_remote_identity(Git(worktree), 'main', 'dev-114', approved)
+        self.command(self.repo, 'config', 'extensions.worktreeConfig', 'true')
+        self.command(worktree, 'config', '--worktree', 'remote.origin.url', old)
+        # Worktree URL entries accumulate with shared config: refuse both URLs.
+        with self.assertRaisesRegex(TaskError, 'one fetch/push'):
+            verify_remote_identity(Git(worktree), 'main', 'dev-114', approved)
+        self.command(worktree, 'config', '--worktree', '--unset-all', 'remote.origin.url')
+        # A rewrite leaves one consistent destination, but it is the old identity.
+        self.command(worktree, 'config', '--worktree', f'url.{old}.insteadOf', new)
+        with self.assertRaisesRegex(TaskError, 'differs from the approved'):
+            verify_remote_identity(Git(worktree), 'main', 'dev-114', approved)
+        self.assertEqual(remote_identity(self.git, 'main', 'dev-114'), approved)
 
     def test_named_transport_refuses_mirror_and_group_configuration(self):
         self.command(self.repo, "remote", "set-url", "origin", "git@github.com:owner/project.git")

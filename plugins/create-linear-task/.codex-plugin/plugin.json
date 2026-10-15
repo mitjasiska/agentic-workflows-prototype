@@ -1,13 +1,13 @@
 {
   "name": "create-linear-task",
   "version": "0.1.0",
-  "description": "Turn rough development ideas into concise, agent-ready Linear issues with Agentic Workflows Lite (AWL), Developer Preview.",
+  "description": "Turn rough development ideas into concise, agent-ready Linear issues with Agentic Workflows Prototype (AWP), Developer Preview.",
   "author": {
     "name": "Mitja Šiška",
     "url": "https://github.com/mitjasiska"
   },
-  "homepage": "https://github.com/mitjasiska/agentic-workflows-lite/tree/main/plugins/create-linear-task",
-  "repository": "https://github.com/mitjasiska/agentic-workflows-lite",
+  "homepage": "https://github.com/mitjasiska/agentic-workflows-prototype/tree/main/plugins/create-linear-task",
+  "repository": "https://github.com/mitjasiska/agentic-workflows-prototype",
   "keywords": [
     "linear",
     "issue-tracking",
@@ -17,7 +17,7 @@
   "interface": {
     "displayName": "Create Linear Task",
     "shortDescription": "Draft concise, agent-ready Linear issues",
-    "longDescription": "Turn a rough development idea into a scoped Linear issue with verifiable acceptance criteria and separate implementation-agent guidance. Part of Agentic Workflows Lite (AWL), Developer Preview.",
+    "longDescription": "Turn a rough development idea into a scoped Linear issue with verifiable acceptance criteria and separate implementation-agent guidance. Part of Agentic Workflows Prototype (AWP), Developer Preview.",
     "developerName": "Mitja Šiška",
     "category": "Productivity",
     "capabilities": [

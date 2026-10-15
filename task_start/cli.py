@@ -65,7 +65,7 @@ def parser(prog: str = "task") -> argparse.ArgumentParser:
     contexts.add_argument("--all", action="store_true", help="Include retired contexts")
     status = commands.add_parser("status", help="Inspect task state and bounded saved history (read-only)")
     status.add_argument("issue", nargs="?", type=issue_identifier)
-    status.add_argument("--all", action="store_true", help="List exactly registered AWL task workspaces by configured Linear project")
+    status.add_argument("--all", action="store_true", help="List exactly registered AWP task workspaces by configured Linear project")
     status.add_argument("--json", action="store_true", help="Print the versioned canonical status projection")
     dashboard = commands.add_parser("dashboard", help="Watch local task state in a read-only browser dashboard",
         description="Serve the local dashboard on 127.0.0.1 only. Remote access can use your own SSH tunnel "
@@ -395,9 +395,9 @@ def dashboard_origin(value: str) -> str:
         raise argparse.ArgumentTypeError(str(error)) from None
 
 
-def awl() -> int:
+def awp() -> int:
     """Installed public entry point; the repository launcher retains task identity."""
-    return main(prog="awl")
+    return main(prog="awp")
 
 
 def main(argv: list[str] | None = None, *, prog: str = "task") -> int:
