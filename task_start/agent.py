@@ -560,6 +560,18 @@ class CodexAdapter(HerdrAgentAdapter):
     def resume_args(self, execution: AgentExecution, reference: dict) -> list[str]:
         return ["resume", *self.launch_args(execution, "")[:-2], "--", reference["value"]]
 
+    @staticmethod
+    def warn_missing_session_report(execution: AgentExecution, observed: dict) -> None:
+        """Provider-directed delivery is safe, but live recovery has stricter evidence."""
+        if observed.get("agent_session") is None:
+            print(f"Warning: Herdr does not report Codex agent_session for pane {execution.workspace.pane_id}. "
+                  "Delivery uses the verified Codex thread, but interrupted-pass recovery and automatic "
+                  "closure of a live agent require matching Herdr session metadata. "
+                  "Check `herdr integration status` and the native hook setup/diagnostics in "
+                  "docs/configuration.md#herdr-codex-session-hook before relying on those features. "
+                  "Installing the hook does not repair an already-running conversation.",
+                  file=sys.stderr, flush=True)
+
     def resume_review(self, execution: AgentExecution, reference: dict, *, recreate: bool) -> LaunchResult:
         """Queue to the exact persisted thread, including when Herdr omits its ID.
 
@@ -578,6 +590,7 @@ class CodexAdapter(HerdrAgentAdapter):
             observed = self.observe_agent(execution, observed, expected_session=reference)
             if observed["agent_status"] not in {"idle", "done"}:
                 raise TaskError("Reviewer is not idle; no follow-up was queued")
+            self.warn_missing_session_report(execution, observed)
             message_id = str(uuid4())
             inputs = [{"type": "text", "text": execution.handoff, "text_elements": []}]
             if execution.delivery_observer:
@@ -885,6 +898,7 @@ class CodexAdapter(HerdrAgentAdapter):
                     if execution.runtime_observer:
                         execution.runtime_observer(dict(state="launching"))
                     self.startup_remaining(startup_deadline)
+                self.warn_missing_session_report(execution, observed)
                 phase = "prompt queue"
                 inputs = [{"type": "text", "text": prompt, "text_elements": []}]
                 if execution.delivery_observer:

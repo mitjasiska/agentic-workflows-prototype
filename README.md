@@ -131,6 +131,11 @@ Configure `[reviewer]` separately before using review; fresh reviews require an
 explicit model and mode in that section or as command flags. The
 [configuration guide](docs/configuration.md) includes examples, option precedence,
 agent compatibility, and optional repository-specific Codex permission profiles.
+The [Herdr Codex session hook](docs/configuration.md#herdr-codex-session-hook) is
+optional for ordinary prompt delivery. Interrupted-pass recovery and automatic
+closure of live agents require matching native session reports; install status
+alone does not prove those reports work. Validate reporting before relying on
+these features.
 For web tasks, optional [on-demand browser setup](docs/browser.md) installs one
 user-level helper for Codex, Pi, and custom shell agents. Explicit `--browser`
 task opt-in prepares isolated actor sessions on the host for connect-only sandbox

@@ -1506,6 +1506,7 @@ class ReviewAdapterTests(unittest.TestCase):
             if method == "thread/read":
                 return dict(thread=dict(id=self.reference["value"], cwd=self.directory))
             if method == "thread/queue/add":
+                self.assertEqual("Warning: Herdr" in stderr.getvalue(), native_report is None)
                 queued.update(params)
                 return dict(queuedSubmission=dict(id="queue", **params))
             if method == "thread/items/list":
@@ -1515,16 +1516,36 @@ class ReviewAdapterTests(unittest.TestCase):
                     clientId=queued["clientUserMessageId"], content=queued["input"]))], nextCursor=None)
             self.fail(method)
         rpc.request.side_effect = request
-        with patch("task_start.agent.CodexRPC") as factory, patch.object(adapter, "command", return_value=dict(agent=self.agent("codex"))):
-            factory.return_value.__enter__.return_value = rpc
-            result = adapter.resume_review(execution, self.reference, recreate=False)
-        self.assertEqual(result.session_id, self.reference["value"])
-        self.assertEqual(result.turn_id, "follow-up")
-        self.assertEqual(queued["input"][0]["text"], execution.handoff)
+        for native_report in (None, dict(self.reference, source="herdr:codex")):
+            with self.subTest(native_report=native_report), patch("task_start.agent.CodexRPC") as factory, \
+                    patch.object(adapter, "command", return_value=dict(agent=self.agent("codex", native_report))), \
+                    patch("sys.stderr", new_callable=io.StringIO) as stderr:
+                rpc.reset_mock()
+                factory.return_value.__enter__.return_value = rpc
+                result = adapter.resume_review(execution, self.reference, recreate=False)
+            self.assertEqual(result.session_id, self.reference["value"])
+            self.assertEqual(result.turn_id, "follow-up")
+            self.assertEqual(queued["input"][0]["text"], execution.handoff)
+            self.assertEqual(sum(c.args[0] == "thread/queue/add" for c in rpc.request.call_args_list), 1)
+            self.assertEqual(stderr.getvalue().count("Warning: Herdr"), int(native_report is None))
         args = adapter.resume_args(execution, self.reference)
         self.assertEqual(args[-1], self.reference["value"])
         self.assertIn("saved-model", args)
         self.assertNotIn("--last", args)
+
+    def test_codex_resume_conflicting_or_malformed_report_never_warns_or_queues(self):
+        execution = self.execution("codex")
+        adapter = Codex(execution.options)
+        for report in ({}, dict(self.reference, value="other")):
+            with self.subTest(report=report), patch("task_start.agent.CodexRPC") as factory, \
+                    patch.object(adapter, "command", return_value=dict(agent=self.agent("codex", report))), \
+                    patch("sys.stderr", new_callable=io.StringIO) as stderr:
+                rpc = factory.return_value.__enter__.return_value
+                rpc.request.return_value = dict(thread=dict(id=self.reference["value"], cwd=self.directory))
+                with self.assertRaises(TaskError):
+                    adapter.resume_review(execution, self.reference, recreate=False)
+                self.assertFalse(any(c.args[0] == "thread/queue/add" for c in rpc.request.call_args_list))
+                self.assertNotIn("Warning: Herdr", stderr.getvalue())
 
     def test_codex_rejects_wrong_history_and_live_runtime(self):
         execution = self.execution("codex")

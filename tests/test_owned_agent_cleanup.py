@@ -93,7 +93,8 @@ class OwnedAgentCleanupTests(unittest.TestCase):
             self.assertFalse(output.exists())
 
     def test_working_blocked_unknown_launching_or_changed_session_refuse_before_close(self):
-        for kind in ("working", "blocked", "unknown", "launching", "session", "terminal", "unregistered", "provider"):
+        for kind in ("working", "blocked", "unknown", "launching", "session", "missing_session",
+                     "malformed_session", "terminal", "unregistered", "provider"):
             with self.subTest(kind=kind), execution() as case:
                 if kind in {"working", "blocked", "unknown"}:
                     case.panes[0]["agent_status"] = kind
@@ -101,6 +102,10 @@ class OwnedAgentCleanupTests(unittest.TestCase):
                     case.panes[0]["launch_pending"] = True
                 elif kind == "session":
                     case.panes[0]["agent_session"]["value"] = "replaced"
+                elif kind == "missing_session":
+                    case.panes[0]["agent_session"] = None
+                elif kind == "malformed_session":
+                    case.panes[0]["agent_session"] = {}
                 elif kind == "terminal":
                     case.panes[0]["terminal_id"] = "replaced"
                 elif kind == "unregistered":

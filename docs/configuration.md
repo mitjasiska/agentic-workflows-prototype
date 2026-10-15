@@ -20,6 +20,175 @@ arguments.
 The existing transport compatibility evidence covers Herdr 0.9.1, Codex CLI
 0.157.1, and Pi CLI 0.87.1; it is not new live validation of packaging.
 
+### Herdr Codex session hook
+
+**Lite setup decision:** the native Herdr Codex hook is an optional integration,
+not an unconditional AWL installation prerequisite. Fresh Codex start, review,
+integration, and loop delivery use the exact readiness marker and Codex provider
+history to establish a thread ID. Explicit follow-ups can use that saved, verified
+ID even when Herdr omits `agent_session`. Neither a pane title nor `READY` alone
+establishes identity or delivery. See [receipt confirmation](architecture.md#codex-receipt-confirmation).
+
+Some features require **matching live Herdr session evidence**:
+
+| Feature | When native `agent_session` is missing |
+| --- | --- |
+| Fresh delivery and exact saved-thread follow-ups | May proceed after provider verification; AWL warns before queuing the task. |
+| Context inspection | Reports `session unknown/stale`; this does not erase the saved provider identity. |
+| Interrupted-pass recovery | Refuses uncertain runtime evidence even with a saved thread ID and result. No replay or replacement is permitted. |
+| Automatic closure of a live agent during forced cleanup | Refuses without matching session metadata and independent provider/process/ownership evidence. Quitting the agent and jobs to the original shell remains the manual path. |
+
+Install and **validate reporting in a fresh disposable session** before relying on
+the last two features. The hook can provide this evidence, but installation alone
+is insufficient: the live probe below found different results for Codex's shared
+background server and `--no-daemon` mode. AWL does not install or enable hooks,
+change launch mode, or relax recovery/cleanup checks. A conflicting or malformed
+report still fails; a previously observed report disappearing during handoff is
+also an error, not merely a warning. The relevant boundaries are
+[`agent.py`](../task_start/agent.py), [`contexts.py`](../task_start/contexts.py),
+and [`PassDelivery.runtime`](../task_start/pass_delivery.py).
+
+#### Install and approve
+
+These commands were confirmed against installed **Herdr 0.9.1** help:
+
+```sh
+herdr --version
+herdr integration --help
+herdr integration install --help
+herdr integration install codex
+herdr integration status
+```
+
+Before installation or upgrade, privately back up any existing affected files
+(and note which do not yet exist). The v8 installation uses:
+
+| User file | Purpose |
+| --- | --- |
+| `~/.codex/herdr-agent-state.sh` | Herdr-managed shell/Python session reporter, marked integration version 8. |
+| `~/.codex/hooks.json` | Registers a `SessionStart` command invoking `bash '<absolute script path>' session`, with a 10-second timeout. Preserve other hooks. |
+| `~/.codex/config.toml` | Ensures Codex hook configuration; the observed installation has `[features] hooks = true`. Preserve unrelated settings. |
+
+`codex: current (v8)` from `herdr integration status` describes the installed
+integration. It does **not** prove hook trust, execution, socket delivery, a
+provider thread ID, or AWL resumability. Recheck version/help after upgrading;
+these paths describe the observed default user configuration, not every custom
+`CODEX_HOME` or managed configuration.
+
+Review the script and registered command yourself before approving the Codex
+hook trust prompt. This is separate from folder trust and tool approvals. In
+Codex 0.162.1, `/hooks` shows the `SessionStart` source, command, enabled state and
+trust state. Approval is normally a one-time decision for the current definition;
+changed definitions require review again. Hooks execute commands, so inspect the
+script as well as the displayed command. Do not bypass hook trust or sandbox
+protections to make reporting work. See the
+[official hook trust documentation](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks).
+
+The inspected v8 script consumes `SessionStart` input and sends
+`pane.report_agent_session` with source `herdr:codex` to the inherited Herdr Unix
+socket. It requires `HERDR_ENV=1`, `HERDR_SOCKET_PATH`, `HERDR_PANE_ID`, `python3`,
+a nonempty session ID and transcript path. A conflicting inherited
+`CODEX_THREAD_ID` suppresses reporting. It catches socket errors silently;
+successful script exit is not proof that Herdr received the report.
+
+#### Verify and diagnose
+
+Use an explicitly identified disposable Herdr pane with an authenticated Codex
+CLI. Give it a unique harmless prompt asking only for `READY`, without tools or
+file changes. Inspect that exact pane, never the most recent conversation:
+
+```sh
+herdr agent get <probe-name-or-pane-id>
+herdr agent read <probe-name-or-pane-id> --source recent-unwrapped --lines 80
+```
+
+In the probe's Codex UI, use `/status` to obtain its provider session ID and
+`/hooks` to inspect trust without toggling settings. Expected native evidence is
+`agent_session: {agent: "codex", kind: "id", source: "herdr:codex", value: "<same ID>"}`
+on the same pane, terminal and checkout. `agent: codex`, `idle`, and
+`interactive_ready: true` only establish detection/readiness, not session identity.
+AWL separately verifies provider history and exact delivery receipts.
+
+If the field is absent, check the three integration files, enabled/trusted hook
+state, startup warnings, Herdr environment in the launched process, Python
+availability and socket accessibility. Check whether `/status` says **Local
+background server**: the dated probe below did not report identity in that mode.
+On a version whose `codex --help` supports it, a separate disposable
+`codex --no-daemon` invocation is a diagnostic comparison, not a verified repair
+for an active AWL task or a new AWL default. Do not restart a shared server or
+change another task to investigate this.
+
+Installing/approving the hook after a conversation starts does not backfill its
+startup event. Attaching a UI to that existing conversation is not a fresh launch.
+Whether a particular explicit resume emits a usable new report must be checked
+against its exact saved ID; do not assume it repairs missing metadata. AWL's
+automatic startup continuation recognizes folder-trust/sign-in menus, not every
+hook-trust screen. Complete hook setup in the disposable session before starting
+task work. If a workflow has already stopped, retain its context/checkpoint and
+inspect the original pane; never replay a prompt or edit identity fields to pass
+recovery. See [startup limitations](lifecycle.md#codex-first-use-trust-and-setup)
+and [interruption recovery](lifecycle.md#checkpoint-and-interruption-recovery).
+
+#### Remove or roll back
+
+Herdr 0.9.1 exposes an explicit uninstall command (confirmed via installed help):
+
+```sh
+herdr integration uninstall --help
+herdr integration uninstall codex
+herdr integration status
+```
+
+Finish affected sessions first and make a fresh private backup of the three files.
+Use the version's supported uninstall, then inspect the files and status for
+remaining Herdr entries. Do not assume uninstall restores the previous whole
+`hooks.json` or `config.toml`, or revokes Codex's saved trust. For exact rollback,
+compare with the pre-install backup and restore only Herdr's changes: its script,
+its `SessionStart` handler, and any hook feature setting introduced by installation.
+Preserve subsequently added settings and other hooks; remove a newly created file
+only if no unrelated content uses it. Do not turn off all Codex hooks as a blanket
+uninstall. Review any remaining trust entry through Codex's hook UI. If the local
+version lacks this uninstall interface, stop and consult its help before changing
+files. Uninstall was not executed against the developer's installation in DEV-85.
+
+#### Validation evidence and limits
+
+**Historical observation, 2026-10-10 (DEV-83 issue snapshot):** manual installation
+on Aquila ensured the three files, reported `current (v8)`, and prompted for hook
+trust, which the user approved after inspecting the script. It did not restore
+`agent_session` for the already-running/resumed reviewer. This is not a recovery
+success claim; DEV-83's retained worktree, database and checkpoint were not touched.
+
+**Fresh probes, 2026-10-15 (DEV-85):** Herdr client/server 0.9.1, integration v8,
+Codex CLI 0.162.1; disposable workspace `w4J`, pane `w4J:p1`, terminal
+`term_65de09bf75375156`, cwd `/tmp/dev85-codex-hook-vjbqgtcm`. Each invocation used
+`--sandbox read-only --ask-for-approval never`, a distinct no-tools readiness
+prompt, and the same on-disk configuration. The hook was already trusted; only
+the control disabled it for that invocation. Each reached `READY` and `idle`.
+
+| Fresh invocation | Codex `/status` session ID | Herdr `agent_session` |
+| --- | --- | --- |
+| Default (Local background server) | `01a13fa5-3f54-7a21-8d28-d16bee1aa376` | Absent, although `/hooks` showed SessionStart installed/active 1/1 and Trusted. |
+| `--no-daemon` | `01a13fab-8ccc-78e0-81ac-e01db77dfbbb` | Matching ID, kind `id`, source `herdr:codex`, in both `agent start` and `agent get`. |
+| `--no-daemon --disable hooks` (invocation-only control) | `01a13fac-8550-7121-a3a5-87cbe5147d46` | Absent; Codex detection and readiness still worked. |
+
+The control changed no saved configuration. All probe agents exited normally;
+only their disposable workspace was closed. Hashes of the three user integration
+files were unchanged. Sanitized observations were retained under the probe's
+temporary cwd; the table records the durable summary. The difference implicates
+launch mode, but does not establish why shared-server reporting was absent.
+No pre-install conversation was resumed, and no end-to-end live AWL recovery or
+full Codex 0.162.1 compatibility claim is made. A local stdio provider-history probe
+could not initialize inside the implementation sandbox; the independent ID
+comparison above used Codex's `/status` UI.
+
+Focused mocked tests cover provider-based delivery with missing native reports,
+warning timing, matching/conflicting/malformed reports, loss of an established
+report, exact saved-thread follow-ups, recovery refusal without replay, and cleanup
+refusal without closure. These are contract tests, not live-hook evidence. Broad
+regression and release-candidate acceptance remain subject to the
+[validation policy](lifecycle.md#validation-guidance).
+
 ### Optional browser setup
 
 Run `python3.12 scripts/install_browser.py` from a stable AWL checkout for guided

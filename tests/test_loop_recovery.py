@@ -268,6 +268,26 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual((len(self.impl_prompts), len(self.prompts)), (1, 0))
         self.assertEqual(loop("DEV-7", action="continue").state, "clean")
 
+    def test_missing_or_ambiguous_native_session_cannot_recover_or_replay_saved_pass(self):
+        for report in (None, {}, dict(agent="codex", kind="id", value="different")):
+            with self.subTest(report=report):
+                case = RecoveryTests(); case.setUp()
+                try:
+                    before = case.interrupt("review")
+                    pane = next(p for p in case.panes if p["pane_id"] == before["delivery"]["location"]["pane_id"])
+                    pane["agent_session"] = report
+                    prompts = (len(case.impl_prompts), len(case.prompts))
+                    result = loop("DEV-7")
+                    self.assertEqual(result.state, "escalated", result.render())
+                    self.assertEqual((len(case.impl_prompts), len(case.prompts)), prompts)
+                    after = case.store.read()[0]
+                    self.assertEqual(after["active_pass"], before["active_pass"])
+                    self.assertEqual(after["delivery"]["context"], before["delivery"]["context"])
+                    self.assertTrue(Path(before["delivery"]["directory"]).exists())
+                    self.assertIsNone(PublicationStore(case.path).read()["acceptance"])
+                finally:
+                    case.doCleanups()
+
     def test_review_drift_cannot_be_forgotten_after_restoration_and_restart(self):
         for phase in ("review", "rereview"):
             for boundary in ("restart", "base_observation", "snapshot_error", "poll", "poll_interrupt", "provider_result", "final_snapshot"):
