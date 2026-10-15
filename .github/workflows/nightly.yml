@@ -1,0 +1,42 @@
+name: Nightly full regression
+
+on:
+  schedule:
+    - cron: '23 2 * * *' # Daily at 02:23 UTC on the default branch (main).
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  full-regression:
+    name: Full offline regression
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      COLUMNS: '240'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+      - name: Record tested revision
+        run: |
+          printf 'Event: `%s`\n\nRef: `%s`\n\nTested revision: `%s`\n' "$GITHUB_EVENT_NAME" "$GITHUB_REF" "$(git rev-parse HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Provision offline packaging prerequisites
+        run: python3.12 -m pip install 'setuptools==84.0.0'
+      - name: Run full offline suite
+        run: time python3.12 -m unittest discover -s tests -v
+      - name: Report result
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          printf 'Job result: **%s**\n\n[Run and logs](%s/%s/actions/runs/%s)\n' "$JOB_STATUS" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >> "$GITHUB_STEP_SUMMARY"

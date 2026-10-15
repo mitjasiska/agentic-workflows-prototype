@@ -613,6 +613,37 @@ capabilities do not authorize task writes during review.
 
 ### Validation guidance
 
+This is the canonical validation policy for development of AWL. The explicit
+human decision on 2026-10-15 replaces the blanket full-regression-before-every-merge
+rule with the following responsibilities:
+
+- **Implementer:** create meaningful behavioral, regression, edge-case,
+  failure-path, and invariant tests; run changed/relevant tests and additional
+  checks justified by risk. Focused execution must not reduce valuable coverage.
+- **Independent reviewer:** assess the full diff, requirements, and test quality;
+  run targeted checks and adversarial probes justified by the change and available
+  evidence. Do not blindly repeat long overlapping suites already evidenced by
+  implementation. Batch all substantive findings and recheck fixes and regressions.
+- **Human PR merge:** require independently reviewed/approved code and passing
+  **Fast PR checks** for the current PR revision. Full regression is **not required
+  for every ordinary merge**. The green-check requirement still applies when
+  GitHub branch protection has not yet been configured. CI does not substitute
+  for code review; review does not prove that CI passed.
+- **Nightly regression:** run the complete offline suite on `main` once nightly.
+  It is non-blocking for ordinary merges, but a failed, cancelled, or missing run
+  remains visible and must be investigated. Record the run URL, tested SHA,
+  conclusion, and logs; a passing nightly proves nothing about a different commit.
+- **Final release candidate:** require one complete passing full regression on
+  the **exact candidate revision**, plus relevant live installation/workflow
+  acceptance. Rerun when the candidate changes materially; evidence must identify
+  the candidate it actually tested. A failed or incomplete run is not a passing
+  release gate. The offline suite alone does not prove live acceptance.
+
+The [CI operation guide](architecture.md#github-actions) defines the checked-in
+commands, nightly UTC schedule, evidence collection, and human protection setup.
+Specifically requested tests, explicit local/per-pass requirements, and deliberately
+requested `exhaustive` review remain authoritative under this policy.
+
 Fresh reviews and same-reviewer re-reviews share the
 [review validation strategy](configuration.md#review-validation), defaulting to
 `focused_first`. Reviewers inspect the full diff and requirements, assess test
@@ -631,9 +662,9 @@ rechecks fixes and regressions (`task review --resume` or the loop's automatic
 re-review). `exhaustive` requests full validation even on findings passes, with
 the same inspection and batching obligations.
 
-Explicit issue/repository requirements remain authoritative. "Full regression must
-pass before merge" or "all tests must pass" does not by itself require this agent
-to execute the full suite locally. External repository CI / GitHub Actions is the
+For other repositories or tasks that explicitly require a full pre-merge suite,
+that requirement does not by itself require the agent to execute it locally.
+External repository CI / GitHub Actions is the
 preferred broad-regression owner where requirements permit it; explicit local or
 per-pass execution requirements cannot be replaced by CI. Agents never assume an
 external gate exists or has passed. Without an established gate, pending final

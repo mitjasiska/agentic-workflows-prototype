@@ -257,7 +257,11 @@ External repository CI is the preferred owner of broad regression; its existence
 and results are never assumed. Explicit local/per-pass checks remain required,
 and unrun merge-time checks stay visible for CI or human verification. A clean
 code review is not CI approval. Lite ends at a PR for human review and manual merge.
-See [validation guidance](docs/lifecycle.md#validation-guidance). Configure
+For development of AWL itself, ordinary merges require independent review/approval
+and passing fast PR CI. Full regression runs nightly and gates the final release
+candidate; it is not required for every ordinary merge. See the canonical
+[validation policy](docs/lifecycle.md#validation-guidance) and
+[CI setup and evidence](docs/architecture.md#github-actions). Configure
 [`review.validation.strategy`](docs/configuration.md#review-validation) as
 `exhaustive` to request full validation on every pass.
 
