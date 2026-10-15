@@ -408,7 +408,7 @@ function render() {
   }
   if (!tasks.length) {
     const knownEmpty = snapshot?.discovery?.state === 'available';
-    taskList.append(node('p', knownEmpty ? 'No registered AWL task workspaces.' : 'Task discovery is incomplete. An empty view does not confirm cleanup.', 'empty'));
+    taskList.append(node('p', knownEmpty ? 'No registered AWP task workspaces.' : 'Task discovery is incomplete. An empty view does not confirm cleanup.', 'empty'));
   }
   renderDetail(task);
   if (disappeared) byId('task-detail').prepend(node('p', snapshot.stale ? 'The selected execution is not in this unverified view.' : 'The selected execution is no longer in the registered task overview.', 'hint'));

@@ -36,7 +36,7 @@ class CreateLinearTaskPluginTests(unittest.TestCase):
 
         self.assertEqual(marketplace["name"], "agentic-workflows-lite")
         self.assertEqual(
-            marketplace["interface"], {"displayName": "Agentic Workflows Lite"}
+            marketplace["interface"], {"displayName": "Agentic Workflows Prototype"}
         )
         self.assertEqual(len(marketplace["plugins"]), 1)
         entry = marketplace["plugins"][0]
@@ -80,7 +80,7 @@ class CreateLinearTaskPluginTests(unittest.TestCase):
         self.assertEqual(manifest["name"], "create-linear-task")
         self.assertEqual(
             manifest["repository"],
-            "https://github.com/mitjasiska/agentic-workflows-lite",
+            "https://github.com/mitjasiska/agentic-workflows-prototype",
         )
         self.assertEqual(
             manifest["homepage"],

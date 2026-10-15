@@ -19,7 +19,7 @@ IMPLEMENTATION_INSTRUCTIONS = """- Treat the complete Linear issue above as the 
 - Use test-first / red-green-refactor when useful; TDD is optional, not a universal mandate.
 - Run focused subsets, including new or changed tests, plus proportionate inexpensive syntax/lint/diff checks during development and before handoff. Do not routinely run the full suite merely to end the implementation pass.
 - Explicit Linear issue and repository validation requirements remain authoritative. Distinguish "full regression must pass before merge" or "all tests must pass" from "this agent must run the full suite locally". Complete checks explicitly required locally or for this pass before reporting ready; if unable, report the blocker honestly. Merge-time requirements may be satisfied externally where permitted, and remain pending until evidenced.
-- External repository CI / GitHub Actions is the preferred owner of broad regression, but never assume CI exists. Report required validation left for CI or human verification; if no external gate is established, surface pending final validation to the human. Lite ends at a PR for human review and manual merge.
+- External repository CI / GitHub Actions is the preferred owner of broad regression, but never assume CI exists. Report required validation left for CI or human verification; if no external gate is established, surface pending final validation to the human. AWP ends at a PR for human review and manual merge.
 - When review findings are supplied, fix the complete batch and rerun relevant tests before the same reviewer rechecks fixes and regressions.
 - Report exactly what was run, skipped, or failed and why; use the existing checks fields when a structured result is requested. Never report an unrun check as passed; independently evidenced results must identify their source and applicable revision, not imply local execution.
 - Do not commit, push, merge, or open a PR.
@@ -74,7 +74,7 @@ those obligations. If unable, record not_run with the reason and report blocked 
 Merge-time requirements may be satisfied externally where permitted, and remain pending until evidenced.
 External repository CI / GitHub Actions is the preferred owner of broad regression. Never assume CI exists
 or substitute unevidenced CI for required checks. If no external gate is established, surface pending final
-validation to the human. Lite ends at a PR for human review and manual merge.
+validation to the human. AWP ends at a PR for human review and manual merge.
 Validation must not mutate tracked or untracked Git-visible task state. Do not run unsafe tests and then
 restore their changes; if a check cannot run safely, record it as not_run with the reason.
 Use the existing checks fields to record exactly what was run, skipped, or failed and why, including commands,

@@ -872,7 +872,7 @@ def validate_loop_report(state, *, failure_guidance=None):
     # exception bodies. A verified preceding pass does not authorize that prose.
     controller_failure = ('. Inspect contexts before recovery; no handoff was retried' in state['reason']
             or any(f'. No initial handoff was claimed; rerun {name} loop ' in state['reason']
-                   for name in ('task', 'awl')))
+                   for name in ('task', 'awl', 'awp')))
     can_redact = (failure_guidance is not None and state['records']
                   and state['status'] in {'escalated', 'interrupted'})
     if controller_failure and not can_redact:
@@ -982,7 +982,7 @@ def render_status(value):
     if value['tasks'] == []:
         lines.append('No matching local task evidence.' if value['selection'] == 'issue' else
                      'No verified registered task workspaces.' if value['discovery']['state'] != 'available' else
-                     'No registered AWL task workspaces.')
+                     'No registered AWP task workspaces.')
     for task in value['tasks'] or []:
         publication = task['publication']['state']
         if publication == 'complete' and not task['publication']['current_acceptance_published']:

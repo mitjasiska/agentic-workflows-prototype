@@ -1,7 +1,13 @@
 # Create Linear Task plugin
 
-Create Linear Task is the task-authoring plugin for Agentic Workflows Lite (AWL),
+Create Linear Task is the task-authoring plugin for Agentic Workflows Prototype (AWP),
 whose first public release is a **Developer Preview**.
+
+The stable plugin name `create-linear-task` and marketplace identifier
+`agentic-workflows-lite` are retained across the repository rename. Import the
+canonical prototype URL below; existing imports need operator verification after
+the rename. See the [migration runbook](../../docs/migration.md) for operator
+approval, host migration, and live acceptance requirements.
 
 This directory is the ChatGPT distribution layer for the canonical
 [`skills/create-linear-task`](../../skills/create-linear-task/SKILL.md) agent skill. The
@@ -64,7 +70,7 @@ python3.12 plugins/create-linear-task/scripts/package_plugin.py \
 - For workspace/private distribution, this repository includes
   [`.agents/plugins/marketplace.json`](../../.agents/plugins/marketplace.json). It exposes
   `plugins/create-linear-task` as the local source `./plugins/create-linear-task`. A workspace admin
-  imports [agentic-workflows-lite](https://github.com/mitjasiska/agentic-workflows-lite)
+  imports [agentic-workflows-prototype](https://github.com/mitjasiska/agentic-workflows-prototype)
   through **Admin → Plugins → Add → Import marketplace**, leaves
   **Path** empty because the marketplace is at the repository root, selects the branch, tag, or
   commit containing the package, reviews the import, and configures installation policy for the

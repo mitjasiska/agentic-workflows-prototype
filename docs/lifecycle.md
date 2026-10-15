@@ -2,8 +2,8 @@
 
 [Project overview](../README.md) · [Configuration](configuration.md) · [Architecture](architecture.md)
 
-Command behavior, invariants, and refusal/retry cases for Agentic Workflows Lite
-(AWL), whose first public release is a **Developer Preview**. Start with the
+Command behavior, invariants, and refusal/retry cases for Agentic Workflows Prototype
+(AWP), whose first public release is a **Developer Preview**. Start with the
 [README](../README.md#using-the-workflow) for the human workflow and command choices.
 
 - [Start and status transition](#task-start)
@@ -28,7 +28,7 @@ interpretation. They do not fetch Linear/GitHub, poll provider history, take
 controller ownership, launch agents, repair records, or create state files. Reading
 Git-visible content for review validity can take time on large checkouts.
 
-The overview starts with AWL implementation/review context bindings and requires
+The overview starts with AWP implementation/review context bindings and requires
 an exact, currently registered Herdr workspace, matching endpoint, repository
 common directory, checkout, branch, and Herdr/Git worktree registration. Labels
 are not identity evidence. Unmanaged workspaces and retired-only contexts are not
@@ -207,24 +207,24 @@ ssh -N -L 8765:127.0.0.1:8765 user@workflow-host
 Open `http://127.0.0.1:8765` on the browser machine. The first port in `-L` may
 be changed if it is busy locally. You can use the workflow machine's private
 Tailscale address/name as the SSH destination with your own SSH/Tailscale setup.
-Lite still listens only on that machine's loopback address; tunneling and private
+AWP still listens only on that machine's loopback address; tunneling and private
 network access are operator-owned, with no remote hosting, accounts, or network
-configuration added by Lite.
+configuration added by AWP.
 
 ### Optional private Tailscale Serve access
 
 Tailscale and background operation are optional; ordinary `task dashboard` still
 works in the foreground with only localhost HTTP access. To use a private HTTPS
 URL without SSH forwarding, use your own Linux Tailscale installation and one
-explicit AWL option:
+explicit AWP option:
 
 ```text
 https://<device>.<tailnet>.ts.net/
     -> Tailscale Serve (private HTTPS)
-    -> http://127.0.0.1:8765/ (AWL)
+    -> http://127.0.0.1:8765/ (AWP)
 ```
 
-Access is limited by **tailnet policy/ACLs**, with no AWL authentication layer.
+Access is limited by **tailnet policy/ACLs**, with no AWP authentication layer.
 Permitted tailnet members can read workflow metadata, including task identities,
 workspace paths, bounded history, and selected task reports. Use private Serve,
 with no Funnel enabled for this endpoint. See [Tailscale Serve prerequisites and access control](https://tailscale.com/docs/features/tailscale-serve).
@@ -246,13 +246,13 @@ Serve's supported `--bg` mode persists after the terminal closes and resumes aft
 device or Tailscale restarts; it needs no additional supervisor. See the
 [Serve CLI reference](https://tailscale.com/docs/reference/tailscale-cli/serve).
 
-For an initial foreground check, run from your permanent AWL checkout:
+For an initial foreground check, run from your permanent AWP checkout:
 
 ```sh
 task dashboard --port 8765 --trusted-origin 'https://<device>.<tailnet>.ts.net'
 ```
 
-AWL still listens only on `127.0.0.1`; local HTTP access remains available. The
+AWP still listens only on `127.0.0.1`; local HTTP access remains available. The
 option accepts one HTTPS hostname and optional port, with no credentials,
 wildcard, path, query, or fragment. A trailing `/`, hostname case, and default
 HTTPS port `:443` are normalized. Other ports must match exactly. Without this
@@ -266,20 +266,20 @@ or ambiguous headers are refused; forwarded headers do not authorize requests.
 To keep the dashboard available after logout and reboot, stop the foreground
 check with Ctrl+C and create `~/.config/systemd/user/awl-dashboard.service`
 (`mkdir -p ~/.config/systemd/user` if needed). This example assumes the permanent
-checkout is `~/projects/agentic-workflows-lite`; adjust both paths and the trusted
+checkout is `~/projects/agentic-workflows-prototype`; adjust both paths and the trusted
 origin. **Never point the service at a temporary Herdr worktree.** If using an
 installed CLI instead, set `ExecStart` to its absolute executable path followed
 by `dashboard` and these options, and keep a stable working directory.
 
 ```ini
 [Unit]
-Description=AWL read-only task dashboard
+Description=AWP read-only task dashboard
 
 [Service]
 Type=simple
-WorkingDirectory=%h/projects/agentic-workflows-lite
+WorkingDirectory=%h/projects/agentic-workflows-prototype
 Environment="PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
-ExecStart=/usr/bin/python3.12 %h/projects/agentic-workflows-lite/task dashboard --port 8765 --trusted-origin https://<device>.<tailnet>.ts.net
+ExecStart=/usr/bin/python3.12 %h/projects/agentic-workflows-prototype/task dashboard --port 8765 --trusted-origin https://<device>.<tailnet>.ts.net
 Restart=always
 RestartSec=5
 
@@ -290,7 +290,7 @@ WantedBy=default.target
 `%h` expands to the service user's home. Check `command -v python3.12 git herdr`
 and adjust the Python path and `Environment` PATH for your installation; a user
 service does not source interactive shell startup files. Use the same account
-and permanent AWL configuration as your normal CLI. Herdr discovery can be
+and permanent AWP configuration as your normal CLI. Herdr discovery can be
 temporarily unavailable after startup; the dashboard labels this uncertainty
 and retries as usual.
 
@@ -312,7 +312,7 @@ enable lingering for your account if it is refused. The dashboard itself runs
 as your regular user. It stays a foreground Python process managed by systemd.
 
 Serve and the dashboard can start in either order. Serve's saved proxy route can
-be active while AWL is unavailable; requests recover when AWL is ready, and an
+be active while AWP is unavailable; requests recover when AWP is ready, and an
 open dashboard reconnects and fetches a fresh snapshot. There is no cross-service
 health gate. After editing the unit, run `systemctl --user daemon-reload` and
 `systemctl --user restart awl-dashboard.service`. To stop it now and disable future
@@ -324,11 +324,11 @@ systemctl --user disable --now awl-dashboard.service
 
 To turn off this Serve HTTPS listener, inspect status then run
 `tailscale serve --https=443 off`. To reconfigure it, turn it off and rerun
-`tailscale serve --bg 8765` with the desired fixed local port; update AWL's `--port`
+`tailscale serve --bg 8765` with the desired fixed local port; update AWP's `--port`
 and restart its service to match. If the external hostname or HTTPS port changes,
 update `--trusted-origin` too. Check `tailscale serve status` afterward.
 `tailscale serve reset` clears **all** Serve configuration on the device, so use
-it only when removing every Serve route is intended. Disabling AWL does not
+it only when removing every Serve route is intended. Disabling AWP does not
 disable lingering for other user services.
 
 ### Manual Tailscale and reboot acceptance check
@@ -338,7 +338,7 @@ reconnects over loopback; they do not verify a real tailnet, systemd, or reboot.
 After the one-time setup above, check your installation:
 
 1. Confirm `tailscale serve status` shows the intended private URL and loopback
-   target. Confirm `ss -ltn 'sport = :8765'` shows AWL listening on `127.0.0.1`,
+   target. Confirm `ss -ltn 'sport = :8765'` shows AWP listening on `127.0.0.1`,
    and local `http://127.0.0.1:8765/` still opens.
 2. On another permitted tailnet device, open `https://<device>.<tailnet>.ts.net/`
    with no SSH tunnel. In browser network tools, verify HTML, `app.js`,
@@ -620,7 +620,7 @@ capabilities do not authorize task writes during review.
 
 ### Validation guidance
 
-This is the canonical validation policy for development of AWL. The explicit
+This is the canonical validation policy for development of AWP. The explicit
 human decision on 2026-10-15 replaces the blanket full-regression-before-every-merge
 rule with the following responsibilities:
 
@@ -675,7 +675,7 @@ External repository CI / GitHub Actions is the
 preferred broad-regression owner where requirements permit it; explicit local or
 per-pass execution requirements cannot be replaced by CI. Agents never assume an
 external gate exists or has passed. Without an established gate, pending final
-validation is surfaced for human verification. Lite ends at a PR for human review
+validation is surfaced for human verification. AWP ends at a PR for human review
 and manual merge; a clean independent code review is not CI approval.
 
 Tests must not mutate tracked or untracked Git-visible task state. If a check
@@ -1046,7 +1046,7 @@ After inspecting a loop stopped solely because its autonomous pass/review budget
 was exhausted, explicitly increase its saved **total** limits:
 
 ```sh
-awl loop DEV-20 --extend --max-passes 10 --max-reviews 5
+awp loop DEV-20 --extend --max-passes 10 --max-reviews 5
 # The source entry point supports the same control:
 ./task loop DEV-20 --extend --max-passes 10 --max-reviews 5
 ```
@@ -1083,7 +1083,7 @@ history or substituting another conversation.
 
 Authorization atomically updates only limits and control state before returning
 to normal routing and receipt recovery. A racing pause stays sticky and requires
-`--continue`. After controller interruption, repeat the ordinary `awl loop DEV-20`
+`--continue`. After controller interruption, repeat the ordinary `awp loop DEV-20`
 to reconcile the authorized boundary or original claim; do not repeat `--extend`
 to replay work. The command never resends a claimed pass.
 

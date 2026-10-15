@@ -2,7 +2,7 @@
 
 [Project overview](../README.md) · [Lifecycle reference](lifecycle.md) · [Agent instructions](../AGENTS.md)
 
-Agentic Workflows Lite (AWL) is a local, single-machine Python development
+Agentic Workflows Prototype (AWP) is a local, single-machine Python development
 controller. Its first public release is a **Developer Preview**.
 
 - [Execution contract and responsibilities](#agent-execution-architecture)
@@ -13,7 +13,7 @@ controller. Its first public release is a **Developer Preview**.
 
 ## Agent execution architecture
 
-AWL supports multiple agent adapters. Codex is the current default
+AWP supports multiple agent adapters. Codex is the current default
 and most mature adapter; Pi is the second supported implementation. Additional
 agents can be implemented as adapters without rewriting task lifecycle logic.
 
@@ -105,7 +105,7 @@ or creating a history store. See the [status contract](lifecycle.md#task-status)
 for discovery, project grouping, operator guidance, and bounded evidence history.
 
 The entry point scopes command identity for workflow-authored recovery hints and
-errors: installed `awl` reports `awl` commands, while `./task` retains `task`.
+errors: installed `awp` reports `awp` commands, while `./task` retains `task`.
 Dashboard readers retain that identity across collector and HTTP request threads.
 This formats command references where they are authored; it does not rewrite
 repository paths, issue contents, agent results, or saved historical prose.
@@ -146,8 +146,8 @@ and ambiguous security headers are refused. Forwarded and Tailscale identity
 headers grant no trust; CSP and no-CORS behavior are unchanged. Tailscale Serve
 preserves the original Host and Origin for HTTP backends (see its
 [proxy implementation](https://github.com/tailscale/tailscale/blob/v1.102.4/ipn/ipnlocal/serve.go));
-AWL still receives plain HTTP over loopback. Access control belongs to tailnet
-policy, with no AWL authentication layer. No arbitrary file, task command, or
+AWP still receives plain HTTP over loopback. Access control belongs to tailnet
+policy, with no AWP authentication layer. No arbitrary file, task command, or
 provider API is reachable through HTTP. The frontend uses DOM text nodes for projected values
 and displays canonical guidance without computing recovery choices.
 
@@ -513,6 +513,11 @@ python3.12 -m venv /tmp/awl-packaging-checks
 /tmp/awl-packaging-checks/bin/python -m pip install 'setuptools>=77'
 /tmp/awl-packaging-checks/bin/python -m unittest discover -s tests -p 'test_packaging.py' -v
 ```
+
+With `uv` on `PATH`, packaging checks also exercise isolated Git-source and
+editable tool migrations from `awl` to `awp`, including an unrelated `awl`
+executable. Without uv that migration test explicitly skips; wheel/editable pip
+checks still run. See the [operator migration runbook](migration.md) for live gates.
 
 The packaging module reports a skip if its build prerequisites are absent; such a
 skip is not evidence that packaging passed. Use a provisioned interpreter for

@@ -14,7 +14,7 @@ Usage: ab-worktree AGENT [--instance ID] [--actor ID] [--connect-only] COMMAND [
 ID: 1-64 ASCII letters, digits, dots, underscores or hyphens; start with a letter/digit.
 AGENT: lowercase name (codex, pi, or a custom shell agent), at most 24 characters.
 --prepare: host-only startup/reuse; --connect-only: requires a prepared live browser.
-AWL_BROWSER_* assignments in an AWL handoff must be preserved on every call.
+AWL_BROWSER_* assignments in an AWP handoff must be preserved on every call.
 Legacy single-actor commands without these modes remain lazy.
 EOF
 }

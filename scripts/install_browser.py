@@ -216,7 +216,7 @@ def main() -> int:
         content = (json.dumps({str(path): hashlib.sha256(content).hexdigest() for path, content, _ in copies}, sort_keys=True) + "\n").encode()
         if old_manifest != content:
             manifest.write_bytes(content)
-        print("Setup complete; no browser was launched. For an opted-in task run awl start/loop/review ISSUE --browser from the host; see the installed guide")
+        print("Setup complete; no browser was launched. For an opted-in task run awp start/loop/review ISSUE --browser from the host; see the installed guide")
         return 0
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         print(f"install_browser: {error}", file=sys.stderr)

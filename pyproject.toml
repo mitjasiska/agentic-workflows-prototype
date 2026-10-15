@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agentic-workflows-lite"
 version = "0.1.0.dev0"
-description = "Linux-native, local-first developer workflows with Linear and Herdr"
+description = "Agentic Workflows Prototype: Linux-native, local-first developer workflows with Linear and Herdr"
 requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -16,11 +16,11 @@ classifiers = [
 ]
 
 [project.urls]
-Repository = "https://github.com/mitjasiska/agentic-workflows-lite"
-Documentation = "https://github.com/mitjasiska/agentic-workflows-lite#readme"
+Repository = "https://github.com/mitjasiska/agentic-workflows-prototype"
+Documentation = "https://github.com/mitjasiska/agentic-workflows-prototype#readme"
 
 [project.scripts]
-awl = "task_start.cli:awl"
+awp = "task_start.cli:awp"
 
 [tool.setuptools]
 packages = ["task_start"]

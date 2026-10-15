@@ -64,6 +64,31 @@ class RegistryDiscoveryTests(unittest.TestCase):
             self.assertEqual(config.default_project_registry(), self.registry)
             self.assertEqual(config.load_projects()[0].linear_project, 'Synthetic Project')
 
+    def test_main_checkout_move_requires_git_repair_and_supports_rollback(self):
+        # This tests Git/registry mechanics only. Live workflow contexts must be
+        # retired before a host move because their saved absolute identity is pinned.
+        dirty = self.worktree / 'uncommitted.txt'
+        dirty.write_text('preserve local work\n')
+        before_head = self.git(self.worktree, 'rev-parse', 'HEAD')
+        original_mapping = self.registry.read_bytes()
+        moved = self.root / 'agentic-workflows-prototype'
+        self.repo.rename(moved)
+        with self.assertRaises(TaskError):
+            config.default_project_registry()
+        self.git(moved, 'worktree', 'repair')
+        self.assertEqual(config.default_project_registry(), moved / 'config/projects.toml')
+        self.assertEqual(config.load_projects(), [config.Project('Synthetic Project', 'example-repo', 'main')])
+        self.assertEqual(self.git(self.worktree, 'rev-parse', '--path-format=absolute', '--git-common-dir').strip(),
+                         str(moved / '.git'))
+        self.assertEqual(self.git(self.worktree, 'rev-parse', 'HEAD'), before_head)
+        self.assertEqual(dirty.read_text(), 'preserve local work\n')
+        moved.rename(self.repo)
+        self.git(self.repo, 'worktree', 'repair')
+        self.assertEqual(config.default_project_registry(), self.registry)
+        self.assertEqual(self.registry.read_bytes(), original_mapping)
+        self.assertEqual(self.git(self.worktree, 'rev-parse', 'HEAD'), before_head)
+        self.assertEqual(dirty.read_text(), 'preserve local work\n')
+
     def test_missing_permanent_registry_does_not_adopt_worktree_or_example(self):
         self.registry.unlink()
         (self.repo / 'config/projects.example.toml').write_text(MAPPING)

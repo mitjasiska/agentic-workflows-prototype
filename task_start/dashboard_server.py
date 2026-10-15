@@ -160,7 +160,7 @@ class DashboardServer(ThreadingHTTPServer):
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
-    server_version = 'AWL'
+    server_version = 'AWP'
     sys_version = ''
 
     def setup(self):

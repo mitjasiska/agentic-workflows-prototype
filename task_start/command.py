@@ -1,4 +1,4 @@
-"""Entry-point identity for commands authored by AWL, never user-text rewriting."""
+"""Entry-point identity for commands authored by AWP, never user-text rewriting."""
 
 from contextlib import contextmanager
 from contextvars import ContextVar
