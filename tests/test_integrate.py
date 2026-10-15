@@ -23,6 +23,7 @@ from task_start.loop_state import LoopStore
 from task_start.metrics import MetricsStore
 from task_start.publish import publish
 from task_start.review import review
+from task_start.review_handoff_state import ReviewHandoffStore
 from task_start.review_state import snapshot
 from codex_startup_fixture import CodexStartupTransport, TRUST_SCREEN
 import test_publish as publishing
@@ -91,6 +92,16 @@ class IntegrationTests(unittest.TestCase):
         self.assertFalse(self.operations("push"))
         self.assertFalse(any(c[0] != "GET" for c in self.calls))
 
+    def prepare_loop(self):
+        import task_start.review as module
+        for name in ("load_projects", "Linear", "ContextRegistry", "HerdrContexts", "load_local", "adapter_for"):
+            self.enterContext(patch(f"task_start.loop.{name}", getattr(module, name)))
+        self.impl_verification_error, self.impl_status = False, "done"
+        implementer = looping.ImplementationAdapter(self)
+        self.enterContext(patch("task_start.implementation_pass.adapter_for", return_value=implementer))
+        self.enterContext(patch("task_start.agent.adapter_for", side_effect=lambda options:
+                                implementer if options.kind == "pi" else self.adapter))
+
     def test_dev30_uncommitted_conflict_install_requires_fresh_review(self):
         self.prepare_integration()
         self.command(self.path, "add", "tracked.txt")
@@ -130,7 +141,14 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(self.command(self.remote, "rev-parse", self.branch), head)
 
     def test_loop_controls_after_install_use_task_checkout_and_retain_integration_context(self):
+        self.prepare_loop()
         self.prepare_integration()
+        # Finish the source review at its actual boundary before integration
+        # changes the base/snapshot. An unconsumed stale handoff must be refused.
+        original = loop("DEV-7", from_review=True, timeout=0.02)
+        self.assertEqual(original.state, "clean", original.render())
+        self.assertEqual(original.data["reviewer_context"], self.accepted_result.context_id)
+        self.assertEqual(ReviewHandoffStore(self.path).read()["consumed"], original.data["run_id"])
         base = self.advance_remote(conflict=True)
         integrate("DEV-7")
         self.assertEqual(self.integration_store.read()["state"], "installed")
@@ -142,12 +160,6 @@ class IntegrationTests(unittest.TestCase):
         self.assertNotEqual(isolated, self.path)
         prompts_before = len(self.prompts)
 
-        import task_start.review as module
-        for name in ("load_projects", "Linear", "ContextRegistry", "HerdrContexts", "load_local", "adapter_for"):
-            self.enterContext(patch(f"task_start.loop.{name}", getattr(module, name)))
-        self.impl_verification_error, self.impl_status = False, "done"
-        self.enterContext(patch("task_start.implementation_pass.adapter_for",
-                                return_value=looping.ImplementationAdapter(self)))
         store = LoopStore(self.path)
 
         def assert_retained():
@@ -177,8 +189,9 @@ class IntegrationTests(unittest.TestCase):
             self.assertTrue(store.read()[1])
 
         with patch.object(LoopStore, "create", pause_after_create):
-            paused = loop("DEV-7", from_review=True, timeout=0.02)
+            paused = loop("DEV-7", action="new", from_review=True, timeout=0.02)
         self.assertEqual(paused.state, "paused", paused.render())
+        self.assertNotEqual(paused.data["run_id"], original.data["run_id"])
         self.assertEqual(len(self.prompts), prompts_before)
         with patch("task_start.loop.load_local", side_effect=AssertionError("No config during status")), \
                 patch("task_start.loop.Linear", side_effect=AssertionError("No Linear during status")):
@@ -190,6 +203,59 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(self.registry.get(completed["reviewer_context"])["worktree"], str(self.path))
         self.assertNotEqual(completed["reviewer_context"], self.accepted_result.context_id)
         self.assertEqual(self.store.read()["acceptance"]["review_state"], integrated.as_dict())
+        self.assertFalse(self.operations("push"))
+        self.assertFalse(any(c[0] != "GET" for c in self.calls))
+
+    def test_integrated_standalone_review_adoption_requires_fresh_evidence(self):
+        self.prepare_loop()
+        self.prepare_integration()
+        handoff = ReviewHandoffStore(self.path)
+        stale = handoff.read()
+        self.assertIsNotNone(stale["implementation"])
+        self.assertIsNotNone(stale["receipt"])
+        base = self.advance_remote(conflict=True)
+        integrate("DEV-7")
+        integrated = snapshot(self.path, base, self.branch)
+        context = self.registry.get("DEV-7-G1")
+        record = self.integration_store.read()
+        saved = self.store.read()
+        prompts_before = len(self.prompts)
+        self.assertNotEqual(stale["snapshot"]["base_commit"], integrated.base_commit)
+        self.assertNotEqual(stale["snapshot"], integrated.as_dict())
+        self.assertIsNone(saved["acceptance"])
+
+        with self.assertRaisesRegex(TaskError, "Standalone review requirements, scope or Git/base evidence changed"):
+            loop("DEV-7", from_review=True, timeout=0.02)
+        self.assertFalse(LoopStore(self.path).path.exists())
+        self.assertEqual(handoff.read(), stale)
+        self.assertEqual(self.store.read(), saved)
+        self.assertEqual(len(self.prompts), prompts_before)
+
+        # Only a real fresh review can replace the obsolete handoff; do not
+        # rewrite its snapshot, identity, receipt, or consumption metadata.
+        fresh = review("DEV-7")
+        self.assertEqual(fresh.state, "clean", fresh.render())
+        self.assertNotEqual(fresh.context_id, self.accepted_result.context_id)
+        proof = handoff.read()
+        self.assertEqual(proof["snapshot"], integrated.as_dict())
+        for key in ("binding", "requirements", "slice", "implementation"):
+            self.assertEqual(proof[key], stale[key])
+        self.assertNotEqual(proof["receipt"], stale["receipt"])
+        accepted = self.store.read()
+        adopted = loop("DEV-7", from_review=True, timeout=0.02)
+        self.assertEqual(adopted.state, "clean", adopted.render())
+        self.assertEqual((adopted.data["passes"], adopted.data["reviews"]), (1, 1))
+        self.assertEqual(adopted.data["reviewer_context"], fresh.context_id)
+        self.assertEqual(LoopStore(self.path).read()[0]["records"][0]["pass_id"], fresh.pass_id)
+        self.assertEqual(handoff.read(), dict(proof, consumed=adopted.data["run_id"]))
+        self.assertEqual(loop("DEV-7").as_dict(), adopted.as_dict())
+        self.assertEqual(len(self.prompts), prompts_before + 1)
+        self.assertEqual(self.store.read(), accepted)
+        self.assertEqual(self.registry.get(fresh.context_id)["worktree"], str(self.path))
+        self.assertEqual(self.registry.get(context["context_id"]), context)
+        self.assertTrue(Path(context["worktree"]).is_dir())
+        self.assertEqual(self.integration_store.read(), record)
+        self.assertEqual(snapshot(self.path, base, self.branch), integrated)
         self.assertFalse(self.operations("push"))
         self.assertFalse(any(c[0] != "GET" for c in self.calls))
 
