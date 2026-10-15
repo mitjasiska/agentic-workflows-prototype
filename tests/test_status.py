@@ -26,6 +26,26 @@ import test_canceled_cleanup as cleanup_fixture
 import test_loop_abort as abort_fixture
 
 
+UNTRUSTED_FAILURE = '<script>SECRET_DEV113</script> provider output /private/sensitive/path session=secret prompt=private'
+VERIFIED_CHECKS = [dict(name='focused regression', result='passed', details='139 tests passed'),
+                   dict(name='full regression', result='not_run', details='Nightly/release gate pending')]
+
+
+def initial_report_failure(test):
+    """Real initial completion followed by an undelivered reviewer launch failure."""
+    from test_loop_bootstrap import BootstrapLoopTests
+    fixture = BootstrapLoopTests()
+    test.addCleanup(fixture.doCleanups)
+    fixture.setUp()
+    fixture.projects = [Project(reviews.ISSUE.project, fixture.repo.name, 'main')]
+    fixture.report = lambda issue='DEV-7': StatusTests.report(fixture, issue)
+    fixture.detail = lambda: StatusTests.detail(fixture)
+    fixture.impl_overrides = dict(summary='Verified initial implementation', checks=VERIFIED_CHECKS)
+    with patch.object(fixture.adapter, 'launch', side_effect=TaskError('agent start failed (exit 1); timeout ' + UNTRUSTED_FAILURE)):
+        fixture.run_loop()
+    return fixture
+
+
 class StatusTests(unittest.TestCase):
     command = loops.LoopIntegrationTests.command
     pane_command = loops.LoopIntegrationTests.pane_command
@@ -756,16 +776,136 @@ class TaskLoopReportTests(unittest.TestCase):
         self.assertEqual(result['kind'], 'diagnostics', result)
         self.assertNotIn('PRIVATE', json.dumps(result))
 
-    def test_raw_persisted_failed_review_exception_is_diagnostics_only(self):
+    def test_initial_completion_survives_undelivered_reviewer_launch_failure(self):
+        self.fixture = f = initial_report_failure(self)
+        state, _ = f.store.read()
+        self.assertEqual([r['phase'] for r in state['records']], ['initial_implementation'])
+        self.assertEqual(f.prompts, [])
+        self.assertIsNone(state['delivery']['receipt'])
+        before = {p: p.read_bytes() for p in (f.store.path, f.registry.path)}
+        cli_report = loops.loop('DEV-7', action='status').render()
+        self.assertIn(UNTRUSTED_FAILURE, cli_report)
+        result = self.read()
+        self.assertEqual(result['kind'], 'report', result)
+        for text in ('loop: escalated', '2 passes, 1 reviews', 'Verified initial implementation',
+                     'Check focused regression: passed — 139 tests passed',
+                     'Check full regression: not_run — Nightly/release gate pending',
+                     'Controller operation failed; failure details withheld.',
+                     'Review delivery/completion is uncertain',
+                     'Final review: not_run; human action required: yes'):
+            self.assertIn(text, result['text'])
+        self.assertIn(f.detail()['guidance']['message'], result['text'])
+        for text in ('SECRET_DEV113', '<script>', '/private/sensitive/path', 'session=secret', 'prompt=private',
+                     state['delivery']['directory']):
+            self.assertNotIn(text, json.dumps(result))
+            self.assertNotIn(text, json.dumps(f.report(None).as_dict()))
+        self.assertEqual(loops.loop('DEV-7', action='status').render(), cli_report)
+        for path, content in before.items():
+            self.assertEqual(path.read_bytes(), content)
+
+    def test_controller_failure_before_review_claim_preserves_not_run(self):
+        f = self.fixture
+        prepare = LoopRuntime.prepare
+        def fail_review(runtime, state):
+            if state['next_phase'] == 'review':
+                raise TaskError(UNTRUSTED_FAILURE)
+            return prepare(runtime, state)
+        with patch.object(LoopRuntime, 'prepare', fail_review):
+            f.run_loop()
+        state, _ = f.store.read()
+        self.assertIsNone(state['active_pass'])
+        result = self.read()
+        self.assertEqual(result['kind'], 'report', result)
+        self.assertIn('1 passes, 0 reviews', result['text'])
+        self.assertIn('Independent review has not run; no review handoff was claimed.', result['text'])
+        self.assertIn('Final review: not_run; human action required: yes', result['text'])
+        self.assertNotIn('SECRET_DEV113', json.dumps(result))
+
+    def test_controller_failure_after_review_delivery_preserves_uncertainty(self):
+        f = self.fixture
+        f.on_review = lambda *_: (_ for _ in ()).throw(RuntimeError(UNTRUSTED_FAILURE))
+        f.run_loop()
+        state, _ = f.store.read()
+        self.assertIsNotNone(state['delivery']['receipt'])
+        self.assertEqual(len(f.prompts), 1)
+        result = self.read()
+        self.assertEqual(result['kind'], 'report', result)
+        self.assertIn('Review delivery/completion is uncertain', result['text'])
+        self.assertNotIn('no review handoff was claimed', result['text'])
+        self.assertNotIn('SECRET_DEV113', json.dumps(result))
+
+    def test_raw_persisted_failed_review_retains_only_verified_preceding_results(self):
         f = self.fixture
         # Legacy failed-review summaries do not distinguish structured outcomes
         # from the review primitive's caught exception strings.
-        f.review_results = [dict(state='failed', summary='PRIVATE review transport output', checks=[], findings=[])]
+        f.impl_overrides = dict(checks=VERIFIED_CHECKS)
+        f.review_results = [loops.findings(loops.finding()),
+            dict(state='failed', summary=UNTRUSTED_FAILURE,
+                 checks=[dict(name=UNTRUSTED_FAILURE, result='failed', details=UNTRUSTED_FAILURE)],
+                 findings=[dict(loops.finding(2), explanation=UNTRUSTED_FAILURE, evidence=UNTRUSTED_FAILURE)])]
         f.run_loop()
-        self.assertIn('PRIVATE', f.store.read()[0]['records'][-1]['summary'])
+        self.assertIn(UNTRUSTED_FAILURE, f.store.read()[0]['records'][-1]['summary'])
+        result = self.read()
+        self.assertEqual(result['kind'], 'report', result)
+        for text in ('4 passes, 2 reviews', 'Implementation completed and validated',
+                     'Review 1: findings', 'Defect 1', 'Fix F1: Fixed F1',
+                     'Check focused regression: passed — 139 tests passed', 'Check full regression: not_run',
+                     'Review 2: failed — Review failed; failure details withheld.',
+                     'Final review: failed; human action required: yes'):
+            self.assertIn(text, result['text'])
+        for text in ('SECRET_DEV113', '<script>', '/private/sensitive/path', 'session=secret', 'prompt=private'):
+            self.assertNotIn(text, json.dumps(result))
+            self.assertNotIn(text, json.dumps(f.report(None).as_dict()))
+
+    def test_failed_review_without_preceding_records_remains_diagnostics(self):
+        f = self.fixture
+        f.review_results = [dict(state='failed', summary=UNTRUSTED_FAILURE, checks=[], findings=[])]
+        f.run_loop(from_review=True)
         result = self.read()
         self.assertEqual(result['kind'], 'diagnostics', result)
-        self.assertNotIn('PRIVATE', json.dumps(result))
+        self.assertNotIn('SECRET_DEV113', json.dumps(result))
+
+    def test_redacted_report_still_rejects_malformed_evidence_and_changed_selection(self):
+        f = self.fixture
+        f.review_results = [loops.findings(loops.finding()),
+                           dict(state='failed', summary=UNTRUSTED_FAILURE, checks=[], findings=[])]
+        f.run_loop()
+        selected, original = f.detail(), f.store.read()
+        self.assertEqual(self.read(selected)['kind'], 'report')
+        for index, changes in (
+                (0, dict(summary='')),
+                (0, dict(checks=[dict(name='unit', result='imaginary', details=UNTRUSTED_FAILURE)])),
+                (0, dict(context_id='DEV-7-I2')),
+                (1, dict(findings=[dict(loops.finding(), severity=UNTRUSTED_FAILURE)])),
+                (2, dict(resolutions=[])),
+                (2, dict(pass_id=original[0]['records'][0]['pass_id'])),
+                (3, dict(checks=[dict(name='unit', result='passed', details={'raw': UNTRUSTED_FAILURE})])),
+                (3, dict(resolutions=[dict(finding_id='F1', summary=UNTRUSTED_FAILURE)]))):
+            with self.subTest(index=index, changes=changes):
+                changed = copy.deepcopy(original[0])
+                changed['records'][index].update(changes)
+                self.write_checkpoint(changed)
+                result = self.read(selected)
+                self.assertNotEqual(result['kind'], 'report', result)
+                self.assertNotIn('SECRET_DEV113', json.dumps(result))
+        self.write_checkpoint(original[0])
+        for group, key, value in (('workspace', 'path', '/different'),
+                                  ('workspace', 'workspace_id', 'other'), ('loop', 'run_id', str(uuid4()))):
+            changed = copy.deepcopy(selected)
+            changed[group][key] = value
+            self.assertNotEqual(self.read(changed)['kind'], 'report')
+        changed = copy.deepcopy(original)
+        changed[0]['records'][0]['summary'] = 'Changed completed evidence'
+        with patch.object(type(f.store), 'read', side_effect=[original, changed]):
+            self.assertNotEqual(self.read(selected)['kind'], 'report')
+        with patch.object(type(f.store), 'read', side_effect=TaskError(UNTRUSTED_FAILURE)):
+            result = self.read(selected)
+            self.assertNotEqual(result['kind'], 'report')
+            self.assertNotIn('SECRET_DEV113', json.dumps(result))
+        with patch.object(Herdr, 'workspaces', side_effect=TaskError(UNTRUSTED_FAILURE)):
+            result = self.read(selected)
+            self.assertNotEqual(result['kind'], 'report')
+            self.assertNotIn('SECRET_DEV113', json.dumps(result))
 
     def test_stale_clean_acceptance_withholds_saved_success(self):
         f = self.fixture

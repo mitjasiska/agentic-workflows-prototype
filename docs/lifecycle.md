@@ -151,8 +151,15 @@ as `task loop ISSUE --status`, including findings, fixes, every recorded check
 and escalated loops retain available partial outcomes without implying success.
 Missing, unreadable, stale, or ambiguous evidence produces an unavailable state;
 safe canonical guidance is offered as **Copy diagnostics** when available. Saved
-controller exceptions and failed review results whose prose may contain raw
-exceptions also use diagnostics. No prompts or provider transcripts are exposed.
+controller exceptions and failed review results never expose their unsafe prose.
+For the current iteration, preceding validated pass summaries, checks, findings
+and resolutions remain reportable after a later failure. The failed boundary uses
+canonical attention guidance and withholds failed-review prose and checks; saved
+pass/review counts remain unchanged. A claimed review without a collected result
+is explicitly uncertain; `Final review` describes only completed records and
+remains `not_run` when none exists. Malformed or unverified pass evidence still
+uses diagnostics, as do unsafe historical reports. No prompts or provider
+transcripts are exposed.
 Copy success is shown only after the clipboard write succeeds; if clipboard
 access fails, use **Select text** and copy manually. Reports are not archived
 after workspace cleanup.
