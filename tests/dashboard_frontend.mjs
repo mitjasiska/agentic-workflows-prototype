@@ -1,6 +1,7 @@
 // Optional developer unit checks using Node built-ins and a small DOM double.
 // These check display/refresh behavior, not browser rendering or layout.
 import assert from 'node:assert/strict';
+import {execFileSync} from 'node:child_process';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
@@ -244,6 +245,56 @@ test('only the selected report is fetched and full literal text is copied after 
   assert.deepEqual(h.clipboard, [full]);
   assert.match(h.ids['task-detail'].textContent, /Report copied\./);
   assert.equal(h.action('Copy report').disabled, false);
+});
+
+test('real redacted reports keep verified checks visible and copyable without failed-boundary secrets', async () => {
+  // Exercise the production projection, then the existing report/copy controls.
+  // Python fixtures use disposable Git/checkpoint stores and mocked transports.
+  const cases = JSON.parse(execFileSync('python3.12', ['-c', `
+import json, sys, unittest
+sys.path.insert(0, 'tests')
+from test_status import StatusTests, initial_report_failure, UNTRUSTED_FAILURE, VERIFIED_CHECKS
+from task_start.status import task_loop_report
+cases = []
+for initial in (True, False):
+    owner = unittest.TestCase()
+    try:
+        if initial:
+            fixture = initial_report_failure(owner)
+        else:
+            fixture = StatusTests()
+            owner.addCleanup(fixture.doCleanups)
+            fixture.setUp()
+            fixture.impl_overrides = dict(checks=VERIFIED_CHECKS)
+            fixture.review_results = [dict(state='failed', summary=UNTRUSTED_FAILURE,
+                findings=[], checks=[dict(name=UNTRUSTED_FAILURE, result='failed', details=UNTRUSTED_FAILURE)])]
+            fixture.run_loop()
+        report = task_loop_report(fixture.detail(), registry=fixture.registry, identities=fixture.identities,
+            projects=fixture.projects, projects_root=fixture.repo.parent)
+        cases.append(dict(projection=fixture.report(None).as_dict(), report=report,
+                          final_review='not_run' if initial else 'failed'))
+    finally:
+        owner.doCleanups()
+print(json.dumps(cases))
+`], {cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 120000}));
+  for (const item of cases) {
+    assert.equal(item.report.kind, 'report');
+    const value = snapshot(); value.projection = item.projection;
+    const h = harness(value, () => item.report); await settle();
+    assert.match(h.ids['task-detail'].textContent, /Current iteration report/);
+    assert.equal(h.reportText().value, item.report.text);
+    assert.match(h.reportText().value, /Check focused regression: passed — 139 tests passed/);
+    assert.match(h.reportText().value, /Check full regression: not_run/);
+    assert.match(h.reportText().value, new RegExp(`Final review: ${item.final_review}; human action required: yes`));
+    assert.match(h.reportText().value, /failure details withheld/);
+    h.action('Copy report').click(); await settle();
+    assert.deepEqual(h.clipboard, [item.report.text]);
+    assert.match(h.ids['task-detail'].textContent, /Report copied\./);
+    for (const output of [JSON.stringify(item), h.ids['task-detail'].textContent, h.reportText().value, ...h.clipboard]) {
+      assert.doesNotMatch(output, /SECRET_DEV113|<script>|\/private\/sensitive\/path|session=secret|prompt=private/);
+    }
+    assert.equal(h.ids['task-detail'].querySelectorAll('script').length, 0);
+  }
 });
 
 for (const rejected of [false, true]) {

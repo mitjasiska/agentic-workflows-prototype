@@ -536,6 +536,52 @@ class CanonicalAdaptationTests(unittest.TestCase):
         self.addCleanup(self.fixture.doCleanups)
         self.fixture.setUp()
 
+    def test_current_http_report_preserves_initial_evidence_after_launch_failure(self):
+        fixture = status_fixture.initial_report_failure(self)
+        collector = dashboard.SnapshotCollector(lambda: fixture.report(None))
+        collector.refresh()
+        server = dashboard.DashboardServer(collector, port=0, report_reader=lambda task: task_loop_report(task,
+            registry=fixture.registry, identities=fixture.identities, projects=fixture.projects,
+            projects_root=fixture.repo.parent))
+        thread = threading.Thread(target=server.serve_forever, kwargs=dict(poll_interval=.01))
+        thread.start()
+        connection = http.client.HTTPConnection('127.0.0.1', server.server_port, timeout=10)
+        try:
+            connection.request('GET', REPORT_URL)
+            response = connection.getresponse()
+            body = json.loads(response.read())
+            self.assertEqual(response.status, 200)
+            self.assertEqual(body['kind'], 'report', body)
+            self.assertEqual(body['identity'], list(report_identity(fixture.detail())))
+            self.assertEqual((body['revision'], body['task']), (1, 0))
+            for text in ('Verified initial implementation', '139 tests passed', 'full regression: not_run',
+                         'Final review: not_run; human action required: yes', 'failure details withheld'):
+                self.assertIn(text, body['text'])
+            self.assertNotIn('SECRET_DEV113', json.dumps(body))
+            self.assertNotIn('<script>', json.dumps(body))
+            # An available partial report does not bypass cache selection or
+            # uncertainty when discovery subsequently fails.
+            connection.request('GET', '/api/report?revision=0&task=0')
+            response = connection.getresponse()
+            self.assertEqual(response.status, 409)
+            response.read()
+            with patch.object(Herdr, 'workspaces', side_effect=TaskError(status_fixture.UNTRUSTED_FAILURE)):
+                collector.refresh()
+            revision = collector.snapshot()['revision']
+            connection.request('GET', f'/api/report?revision={revision}&task=0')
+            response = connection.getresponse()
+            body = json.loads(response.read())
+            self.assertEqual(body['kind'], 'diagnostics')
+            self.assertIn('snapshot is unverified', body['message'])
+            self.assertNotIn('Verified initial implementation', body['text'])
+            self.assertNotIn('SECRET_DEV113', json.dumps(body))
+        finally:
+            connection.close()
+            collector.close()
+            server.shutdown()
+            server.server_close()
+            thread.join(2)
+
     def test_selected_http_report_uses_real_checkpoint_then_missing_checkpoint_diagnostics(self):
         fixture = self.fixture
         expected = fixture.run_loop().render()

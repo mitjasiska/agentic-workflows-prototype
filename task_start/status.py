@@ -750,7 +750,7 @@ def _read_task(issue, repo, path, contexts, registry, projects, root, discovery,
         # Render only the selected task, from the same checkpoint pair that the
         # canonical reader verified and re-read above. Never add prose to status.
         try:
-            loop_report['text'] = render_loop_report(loop, pause)
+            loop_report['text'] = render_loop_report(loop, pause, failure_guidance=task['guidance']['message'])
         except READ_ERRORS:
             pass  # The overview remains unchanged; the selected report is unavailable.
     return task
@@ -858,26 +858,43 @@ def report_identity(task):
             for key in ('path', 'branch', 'workspace_id', 'endpoint')))
 
 
-def validate_loop_report(state):
+def validate_loop_report(state, *, failure_guidance=None):
+    """Validate all reported evidence; optionally redact a later failed boundary.
+
+    Only current reports supply canonical guidance. Historical reports retain
+    their strict, original-text contract. The projection never changes saved
+    evidence, counts, routing, or acceptance.
+    """
     from .implementation_pass import parse_implementation
     from .review_result import parse_verdict
 
     # Controller exceptions and failed review primitives can persist arbitrary
-    # exception bodies. Their prose has no safe report provenance; use canonical
-    # diagnostics instead. Structured blocked outcomes remain fully reportable.
-    if ('. Inspect contexts before recovery; no handoff was retried' in state['reason']
+    # exception bodies. A verified preceding pass does not authorize that prose.
+    controller_failure = ('. Inspect contexts before recovery; no handoff was retried' in state['reason']
             or any(f'. No initial handoff was claimed; rerun {name} loop ' in state['reason']
-                   for name in ('task', 'awl'))):
+                   for name in ('task', 'awl')))
+    can_redact = (failure_guidance is not None and state['records']
+                  and state['status'] in {'escalated', 'interrupted'})
+    if controller_failure and not can_redact:
         raise TaskError('Unfiltered controller failure')
-    findings = []
-    for record in state['records']:
+    findings, records = [], []
+    failed_review = False
+    for index, record in enumerate(state['records']):
         value = {key: record[key] for key in ('pass_id', 'state', 'summary', 'checks')}
         if record['phase'] in {'review', 'rereview'}:
-            if record['state'] == 'failed' or record['resolutions']:
+            if record['resolutions']:
                 raise TaskError('Unfiltered review failure')
             value['findings'] = record['findings']
             parse_verdict(json.dumps(value), record['pass_id'], routing=True)
             findings = record['findings']
+            if record['state'] == 'failed':
+                if (not can_redact or index == 0 or index != len(state['records']) - 1
+                        or state['active_pass'] is not None or state['next_phase'] is not None):
+                    raise TaskError('Unfiltered review failure')
+                failed_review = True
+                # Even structurally valid failed results may contain exception
+                # output in every prose field. Keep only the verified outcome.
+                record = dict(record, summary='Review failed; failure details withheld.', findings=[], checks=[])
         else:
             if record['findings']:
                 raise TaskError('Unexpected implementation findings')
@@ -886,12 +903,27 @@ def validate_loop_report(state):
                 value['task_assessment'] = record['task_assessment']
             parse_implementation(json.dumps(value), record['pass_id'], findings,
                                  assessment_enabled='task_assessment' in record)
+        records.append(record)
+    if controller_failure or failed_review:
+        reason = ('Review failed' if failed_review else 'Controller operation failed')
+        reason += '; failure details withheld. ' + failure_guidance
+        if state['active_pass'] and state['active_pass']['phase'] in {'review', 'rereview'}:
+            reason += (' Review delivery/completion is uncertain; final review below describes only completed records.')
+        elif not any(r['phase'] in {'review', 'rereview'} for r in records):
+            reason += ' Independent review has not run; no review handoff was claimed.'
+        return dict(state, reason=reason, records=records)
+    return state
 
 
-def render_loop_report(state, pause):
+def render_loop_report(state, pause, *, failure_guidance=None):
     from .loop import report
-    validate_loop_report(state)
-    return report(state, pause).render()
+    projected = validate_loop_report(state, failure_guidance=failure_guidance)
+    result = report(projected, pause)
+    if projected is not state:
+        # A redacted boundary has only canonical attention guidance, never a
+        # recovery suggestion derived from the failed result's private fields.
+        result.data['next_action'] = None
+    return result.render()
 
 
 def unavailable_report(message, task=None, discovery=None):
