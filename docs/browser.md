@@ -217,9 +217,10 @@ Prepared sessions use private local Unix sockets under
 `AWL_BROWSER_RUNTIME_DIR`. This directory must be physical, owned by the user,
 and mode 700. Records and locks are private and live outside Git. The socket path
 must fit Linux's 108-byte bound. A per-instance lock prevents duplicate startup.
-The client verifies socket ownership, inode, daemon PID/start time, and the exact
-recorded worktree/agent/instance/actor before sending commands. It never spawns a
-CLI or daemon in connect-only mode, including after socket loss. Before browser
+The client verifies socket ownership and continuity, daemon identity, and the exact
+recorded worktree/agent/instance/actor before sending commands. Visible peers retain
+PID/start-time checks; hidden PIDs require the
+[host proof below](#pid-namespace-identity). It never spawns a CLI or daemon in connect-only mode, including after socket loss. Before browser
 actions it sends the pinned protocol's non-launching `stream_status` probe, which
 checks the Chrome connection without enabling streaming. A surviving daemon with
 a lost browser is insufficient: unavailable Chrome blocks the action and requires
@@ -256,12 +257,84 @@ the supported upstream launcher would automatically add `--no-sandbox`.
 Never disable provider/Chrome sandboxing, widen global permissions, or expose a
 public browser/CDP endpoint to make a check pass.
 
-A sandbox must already permit connecting to the chosen private socket directory.
-Host preparation does not grant access through a denied provider filesystem or
-Unix-socket policy. Identity verification also needs the host daemon PID and
-`/proc/PID/stat` to be visible; a provider that hides them cannot use this transport. If the directory is unavailable, report the concrete denial
-and resolve it through the operator's normal permissions process. Do not alter
-third-party settings or silently choose another runtime directory/session.
+### PID namespace identity
+
+Linux translates `SO_PEERCRED` into the caller's PID namespace. A daemon outside
+that namespace can report PID **0** while its Unix socket remains usable; this
+is not evidence that Chrome is missing. See the kernel's
+[credential translation](https://github.com/torvalds/linux/blob/v6.8/net/core/sock.c)
+and [PID translation](https://github.com/torvalds/linux/blob/v6.8/kernel/pid.c).
+The helper never reads `/proc/0/stat` or substitutes a supplied daemon PID.
+
+Host preparation records a versioned continuity proof alongside the original
+PID/start time: kernel boot ID, preparing PID namespace, peer UID/GID, and the
+socket's device, inode, nanosecond change time, owner, group and mode, plus its
+kernel listener inode and 64-bit socket cookie. For an existing record, only
+successful verification of its original visible PID/start
+time and inode can establish that proof. Connect-only never writes or upgrades
+ownership records. Missing, malformed, duplicate or inconsistent proof fails
+closed for a hidden PID.
+
+Every connection checks the private runtime directory and exact persisted actor
+and session assignments. It compares the socket metadata and peer credentials
+with the host proof and rechecks the socket pathname after connecting, before
+sending protocol bytes. Rebinding a pathname requires unlinking the old socket;
+the filesystem metadata and kernel listener cookie checks reject a replacement,
+even if the filesystem inode and timestamp are recycled. The helper resolves one
+exact listener in `/proc/net/unix` and uses `NETLINK_SOCK_DIAG` to verify its name,
+listening state and filesystem device/inode before comparing the cookie. The
+diagnostic ABI exposes only the low 32 bits of the filesystem inode; the full
+inode remains stored and checked in the separate socket continuity proof. Missing
+or ambiguous listeners and denied/malformed kernel replies refuse access. See the
+kernel [Unix socket diagnostics](https://github.com/torvalds/linux/blob/v6.8/net/unix/diag.c).
+A changed boot or incompatible credential/socket metadata from a different mount
+view also refuses access. UID/GID numbers must agree with the host proof; a
+separate user namespace with unchanged mappings is supported.
+
+A positive peer PID must still pass `/proc/PID/stat` start-time verification.
+Within the preparing namespace its numeric PID must also match. Across namespaces
+Linux can translate a visible PID to a different number; the start time and socket
+proof must still agree. Missing/denied or malformed procfs evidence for a positive
+PID is an identity constraint, never permission to skip a failed check.
+
+PID 0 is accepted only with a complete matching host proof and a different caller
+PID namespace. The helper also obtains **SO_PEERPIDFD** directly from the connected
+socket and polls it for process exit before sending commands. This requires Linux
+6.5+ and a sandbox policy permitting that socket option. On non-generic Linux
+socket ABIs, Python must expose the `SO_PEERPIDFD` constant. A stopped peer, inherited
+listener whose original daemon has exited, unsupported kernel or denied pidfd
+fails closed. A pidfd is used for liveness, not its inode as a persistent process
+identifier: older kernels share an anonymous inode for pidfds. See
+[pidfd polling](https://man7.org/linux/man-pages/man2/pidfd_open.2.html).
+The existing Chrome liveness probe and unexpected-relaunch refusal still apply.
+
+This proof trusts the host preparer, kernel, filesystem metadata and private
+ownership records. It assumes the user and privileged host administrators do not
+maliciously rewrite those records, substitute mounts or transfer a live daemon's
+listener to another process. It authenticates continuity of the host-assigned
+socket under that ownership boundary; it is not a cryptographic attestation or
+protection against a malicious process with the same user's unrestricted file
+access. Actor checks prevent conflicting assignments and accidental cross-session
+attachment; sandbox policy supplies isolation from hostile same-user actors.
+
+A sandbox must permit the exact private runtime mount, ownership files/locks and
+Unix socket. Its network namespace must expose that listener through
+`/proc/net/unix` and permit `NETLINK_SOCK_DIAG`; a separate network namespace that
+hides it is unsupported. A denied mount/socket, incompatible UID/GID mapping or
+inaccessible identity evidence produces a diagnostic with the assigned actor and host recovery
+command. Report that constraint through the operator's normal permissions process;
+never start Chrome in the sandbox, change sandbox policy globally, expose TCP/CDP,
+or silently select another directory/session.
+
+For an existing managed installation, run `python3.12 scripts/install_browser.py`
+on the host from the updated AWL checkout. Its manifest checks preserve personal
+wrappers and edited files. Then run the diagnostic's exact `--prepare` command in
+the original browser worktree on the host. This adds proof to the existing owned
+session after verifying its legacy identity; it neither needs checkout edits nor
+relaunches a healthy browser. Run the same actor's `--connect-only snapshot -i`
+on the host and in the sandbox. A legacy record remains usable with visible
+PID/start-time verification, but cannot authenticate PID 0 until host preparation
+has added the proof. Do not manufacture proof from sandbox observations.
 
 ## Validation
 
@@ -279,3 +352,23 @@ the others remain usable. Repeat across worktrees and on fresh/resumed review.
 Record actual agent/Chrome versions and report unavailable Codex, Pi, custom-agent,
 or multi-instance checks explicitly. Full offline regression remains a merge-time
 gate under the [repository validation guidance](architecture.md#validation).
+
+### Dated transport evidence
+
+2026-10-14 (DEV-108 implementation): the existing DEV-104-R1 socket reported
+`SO_PEERCRED=(0, 1001, 1001)` inside Codex on Linux 6.8.0-142-generic. A
+kernel-provided peer pidfd reported `Pid: 0` / `NSpid: 0`; the installed legacy
+helper reproduced `/proc/0/stat` from the exact R1 worktree. No R1 metadata,
+checkout or conversation was changed. The previously reported host success is
+issue evidence, not a host check performed in this pass.
+
+Two disposable fake daemons were prepared in one Codex tool PID namespace and
+queried from another. With actual kernel peer PID 0, the updated helper returned
+each actor's separate `snapshot -i`, rejected a conflicting actor assignment, and
+closed one while the other stayed usable. Both ownership proofs, including kernel
+listener cookies, stayed unchanged; the launch log contained exactly two daemons.
+This is transport evidence, not live Chrome acceptance.
+Direct `unshare` was denied. Paired DEV-104-R1 host/sandbox acceptance and an actual
+user-level helper upgrade are **not_run**: this pass cannot write the host helper
+installation or run outside Codex. The managed upgrade is covered in temporary-home
+tests. Full offline regression remains pending for the pre-merge owner.

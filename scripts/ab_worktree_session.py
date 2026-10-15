@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import select
 import shlex
 import shutil
 import socket
@@ -45,21 +46,209 @@ def private_file(path, *, create=False):
     return os.fdopen(fd, 'r+' if create else 'r')
 
 
+def ownership_record(source):
+    def unique_fields(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError('Ambiguous browser ownership record: duplicate field')
+            value[key] = item
+        return value
+    return json.load(source, object_pairs_hook=unique_fields)
+
+
+def namespace_identity(kind):
+    info = Path(f'/proc/self/ns/{kind}').stat()
+    return dict(device=info.st_dev, inode=info.st_ino)
+
+
+def socket_identity(path):
+    info = path.lstat()
+    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
+        raise ValueError('Browser socket is not an owned local Unix socket')
+    return dict(device=info.st_dev, inode=info.st_ino, ctime_ns=info.st_ctime_ns,
+                uid=info.st_uid, gid=info.st_gid, mode=info.st_mode)
+
+
+def listener_identity(path, info):
+    """Pin the kernel listener, not just a potentially recycled filesystem inode."""
+    try:
+        rows = [line.split(maxsplit=7) for line in Path('/proc/net/unix').read_text().splitlines()[1:]]
+        matches = [row for row in rows if len(row) == 8 and row[7] == str(path)
+                   and row[3:6] == ['00010000', '0001', '01']]
+        if len(matches) != 1:
+            raise ValueError('Missing or ambiguous kernel browser listener; check sandbox network/procfs visibility')
+        inode = int(matches[0][6])
+        if not 0 < inode <= 0xffffffff:
+            raise ValueError('Unsupported kernel browser listener inode')
+        # Linux SOCK_DIAG_BY_FAMILY / unix_diag_req, requesting NAME and VFS.
+        payload = struct.pack('=BBHIIIII', socket.AF_UNIX, 0, 0, 0xffffffff, inode, 3, 0xffffffff, 0xffffffff)
+        with socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, 4) as diag:
+            diag.settimeout(5)
+            diag.sendto(struct.pack('=IHHII', 16 + len(payload), 20, 1, 1, 0) + payload, (0, 0))
+            data, sender = diag.recvfrom(4096)
+        return parse_listener(data, sender, inode, path, info)
+    except OSError as error:
+        raise ValueError(f'Kernel browser listener proof inaccessible: {error}; '
+                         'sandbox must expose the prepared listener through /proc/net/unix and NETLINK_SOCK_DIAG') from error
+
+
+def parse_listener(data, sender, inode, path, info):
+    if sender != (0, 0) or len(data) < 32:
+        raise ValueError('Invalid kernel browser listener response')
+    length, kind, flags, sequence, _ = struct.unpack_from('=IHHII', data)
+    if length != len(data) or kind != 20 or flags != 0 or sequence != 1:
+        raise ValueError('Kernel browser listener lookup failed; check NETLINK_SOCK_DIAG access and session continuity')
+    family, kind, state, _, found, low, high = struct.unpack_from('=BBBBIII', data, 16)
+    if (family, kind, state, found) != (socket.AF_UNIX, socket.SOCK_STREAM, 10, inode) or (low, high) in ((0, 0), (0xffffffff, 0xffffffff)):
+        raise ValueError('Prepared browser kernel listener identity changed')
+    attributes = {}
+    offset = 32
+    while offset < len(data):
+        if offset + 4 > len(data):
+            raise ValueError('Truncated kernel browser listener attribute')
+        size, kind = struct.unpack_from('=HH', data, offset)
+        if size < 4 or offset + size > len(data) or kind in attributes:
+            raise ValueError('Invalid or ambiguous kernel browser listener attributes')
+        attributes[kind] = data[offset + 4:offset + size]
+        offset += (size + 3) & ~3
+    # unix_diag_vfs uses the kernel's 12:20 device encoding, not stat's encoding.
+    device = os.major(info['device']) << 20 | os.minor(info['device'])
+    # UNIX_DIAG_VFS projects i_ino to __u32. Keep the full filesystem inode in
+    # the separate socket continuity proof; only this ABI comparison truncates.
+    if (offset != len(data) or attributes.get(0) != os.fsencode(path) + b'\0'
+            or len(attributes.get(1, b'')) != 8
+            or struct.unpack('=II', attributes[1]) != (info['inode'] & 0xffffffff, device)):
+        raise ValueError('Kernel listener does not match the owned browser socket')
+    return dict(inode=inode, cookie=[low, high])
+
+
+def process_start(pid):
+    # Never interpret a PID from another procfs numbering domain as this peer.
+    if int(Path('/proc/self/stat').read_text().split(' ', 1)[0]) != os.getpid():
+        raise ValueError('Browser identity requires procfs for the calling PID namespace')
+    try:
+        fields = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
+        started = fields[19]
+        if not started.isascii() or not started.isdigit():
+            raise ValueError('Invalid process start time')
+    except (IndexError, ValueError) as error:
+        raise ValueError('Invalid browser peer procfs identity') from error
+    if fields[0] in {'Z', 'X', 'x'}:
+        raise ValueError('Prepared browser daemon has stopped')
+    return started
+
+
+def validate_peer_record(peer):
+    legacy = {'pid', 'started', 'inode'}
+    if (not isinstance(peer, dict) or set(peer) not in (legacy, legacy | {'proof'})
+            or type(peer['pid']) is not int or peer['pid'] <= 0
+            or not isinstance(peer['started'], str) or not peer['started'].isascii()
+            or not peer['started'].isdigit() or type(peer['inode']) is not int or peer['inode'] <= 0):
+        raise ValueError('Prepared browser daemon identity changed or invalid host peer record')
+    if 'proof' not in peer:
+        return
+    proof = peer['proof']
+    if (not isinstance(proof, dict)
+            or set(proof) != {'version', 'socket', 'boot_id', 'pid_ns', 'uid', 'gid', 'process', 'listener'}
+            or type(proof['version']) is not int or proof['version'] != 1
+            or not isinstance(proof['boot_id'], str)
+            or not re.fullmatch(r'[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}', proof['boot_id'])
+            or any(type(proof[k]) is not int or proof[k] < 0 for k in ('uid', 'gid'))):
+        raise ValueError('Invalid host browser identity proof; host preparation is required')
+    for key, fields in [('socket', {'device', 'inode', 'ctime_ns', 'uid', 'gid', 'mode'}),
+                        ('pid_ns', {'device', 'inode'})]:
+        value = proof[key]
+        if (not isinstance(value, dict) or set(value) != fields
+                or any(type(v) is not int or v < 0 for v in value.values())):
+            raise ValueError('Invalid host browser identity proof; host preparation is required')
+    listener = proof['listener']
+    if (not isinstance(listener, dict) or set(listener) != {'inode', 'cookie'}
+            or type(listener['inode']) is not int or not 0 < listener['inode'] <= 0xffffffff
+            or not isinstance(listener['cookie'], list) or len(listener['cookie']) != 2
+            or any(type(v) is not int or not 0 <= v <= 0xffffffff for v in listener['cookie'])
+            or listener['cookie'] in ([0, 0], [0xffffffff, 0xffffffff])):
+        raise ValueError('Invalid host kernel listener proof; host preparation is required')
+    process = proof['process']
+    if (proof['socket']['inode'] != peer['inode'] or proof['socket']['uid'] != proof['uid']
+            or not isinstance(process, dict) or type(process.get('pid')) is not int
+            or process != dict(pid=peer['pid'], started=peer['started'])):
+        raise ValueError('Inconsistent host browser identity proof; refusing another session')
+
+
+@contextmanager
+def live_peer(connection):
+    # Linux SO_PEERPIDFD (6.5+): obtained from the connected socket, never from
+    # a supplied PID. Poll works even when SO_PEERCRED translates the PID to 0.
+    # Do not use fstat(pidfd) as identity: pre-pidfs kernels share an anon inode.
+    option = getattr(socket, 'SO_PEERPIDFD', None)
+    if option is None:
+        # Python 3.12 lacks this name. Only use asm-generic's numeric ABI on
+        # platforms with its socket constants, never interpret another option
+        # (e.g. on SPARC) as a returned file descriptor.
+        if socket.SOL_SOCKET != 1 or socket.SO_PEERCRED != 17:
+            raise ValueError('Browser identity requires Python exposing SO_PEERPIDFD on this socket ABI')
+        option = 77
+    try:
+        fd = connection.getsockopt(socket.SOL_SOCKET, option)
+    except OSError as error:
+        raise ValueError(f'Browser peer identity inaccessible (SO_PEERPIDFD: {error}); '
+                         'host/kernel and sandbox must permit peer pidfds') from error
+    try:
+        poll = select.poll()
+        poll.register(fd, select.POLLIN)
+        if poll.poll(0):
+            raise ValueError('Prepared browser daemon has stopped; host preparation is required')
+        yield
+    finally:
+        os.close(fd)
+
+
 @contextmanager
 def connection_to(path, expected=None):
-    info = path.lstat()
-    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
-        raise ValueError('Browser socket is not an owned local Unix socket')
-    with socket.socket(socket.AF_UNIX) as connection:
-        connection.settimeout(35)
-        connection.connect(str(path))
-        pid, uid, _ = struct.unpack('3i', connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
-        # The process start time also distinguishes a recycled daemon PID.
-        started = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[19]
-        peer = dict(pid=pid, started=started, inode=info.st_ino)
-        if uid != os.getuid() or expected is not None and peer != expected:
-            raise ValueError('Prepared browser daemon identity changed; refusing another session')
-        yield connection, peer
+    if expected is not None:
+        validate_peer_record(expected)
+    try:
+        info = socket_identity(path)
+        with socket.socket(socket.AF_UNIX) as connection:
+            connection.settimeout(35)
+            connection.connect(str(path))
+            pid, uid, gid = struct.unpack('3i', connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+            if uid != os.getuid() or pid < 0 or gid < 0:
+                raise ValueError('Prepared browser daemon identity changed: incompatible peer credentials')
+            if expected is not None and info['inode'] != expected['inode']:
+                raise ValueError('Prepared browser daemon identity changed; refusing another session')
+            proof = dict(version=1, socket=info, boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+                         pid_ns=namespace_identity('pid'), uid=uid, gid=gid, listener=listener_identity(path, info))
+            stored = expected.get('proof') if expected is not None else None
+            same_namespace = stored is None or stored['pid_ns'] == proof['pid_ns']
+            if stored is not None and any(stored[key] != proof[key] for key in proof if key != 'pid_ns'):
+                raise ValueError('Prepared browser daemon identity changed; host socket/credential proof differs')
+            if pid == 0:
+                if stored is None or same_namespace:
+                    raise ValueError('Browser peer PID is not visible and host namespace proof is missing or incompatible; '
+                                     'rerun host preparation with the upgraded helper')
+                peer = expected
+            else:
+                # A visible process never falls back after a failed PID/start check.
+                started = process_start(pid)
+                if expected is not None and (started != expected['started'] or same_namespace and pid != expected['pid']):
+                    raise ValueError('Prepared browser daemon identity changed; refusing another session')
+                proof['process'] = dict(pid=pid, started=started)
+                peer = expected if stored is not None else dict(pid=pid, started=started, inode=info['inode'], proof=proof)
+            # Recheck the pathname after connect/identity inspection, before any
+            # protocol bytes. Bind replacement requires unlinking the old inode.
+            if socket_identity(path) != info:
+                raise ValueError('Prepared browser socket changed during connection')
+            if pid == 0:
+                with live_peer(connection):
+                    yield connection, peer
+            else:
+                yield connection, peer
+    except OSError as error:
+        raise ValueError(f'Host-prepared browser socket/process evidence is inaccessible: {error}; '
+                         'check the exact runtime mount, Unix-socket policy and procfs visibility on the host; '
+                         'no launch fallback was attempted') from error
 
 
 def request(path, command, expected=None, *, connect_only=False):
@@ -198,7 +387,7 @@ def prepare(identity, directory, record_path, sock, actor_path):
     previous = None
     if record_path.exists():
         with private_file(record_path) as source:
-            previous = json.load(source)
+            previous = ownership_record(source)
         if not isinstance(previous, dict) or previous.get('identity') != identity:
             raise ValueError('Instance is assigned to a different actor; supply a distinct stable instance ID')
     # The caller holds both actor and instance locks. Reserve only after the
@@ -206,7 +395,8 @@ def prepare(identity, directory, record_path, sock, actor_path):
     if previous is not None and sock.exists():
         if not actor_path.exists():
             save_record(actor_path, identity)
-        request(sock, dict(action='snapshot'), previous['peer'])
+        _, peer = request(sock, dict(action='snapshot'), previous['peer'])
+        previous['peer'] = peer
         previous['ready'] = True
         save_record(record_path, previous)
         return previous
@@ -310,7 +500,7 @@ def main():
             fcntl.flock(actor_lock, fcntl.LOCK_EX)
             if actor_path.exists() or actor_path.is_symlink():
                 with private_file(actor_path) as source:
-                    assigned = json.load(source)
+                    assigned = ownership_record(source)
                 if assigned != identity:
                     if isinstance(assigned, dict) and all(assigned.get(k) == identity[k] for k in ('root', 'agent', 'actor')):
                         recovery = shlex.join([str(Path(__file__).resolve().with_name('ab-worktree')), agent,
@@ -325,7 +515,7 @@ def main():
                     print(json.dumps(dict(identity, runtime_dir=str(directory))))
                 else:
                     with private_file(record_path) as source:
-                        prepared = json.load(source)
+                        prepared = ownership_record(source)
                     if not isinstance(prepared, dict) or prepared.get('identity') != identity:
                         raise ValueError('Prepared/requested browser identity mismatch')
                     if prepared.get('ready') is not True and command['action'] != 'close':
@@ -344,6 +534,8 @@ def main():
                         print(json.dumps(data, ensure_ascii=False))
         return 0
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+        if isinstance(error, OSError):
+            error = f'{error}; verify host preparation and sandbox access to the exact runtime mount and ownership files'
         print(f'ab-worktree: instance {instance or "<missing>"}, actor {actor or "<missing>"}: {error}. '
               f'Host recovery (same checkout): AWL_BROWSER_RUNTIME_DIR={shlex.quote(str(directory))} {recovery}', file=sys.stderr)
         return 2
