@@ -241,8 +241,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # An index belongs to exactly one cache revision. Neither issue-only
         # lookup nor a client-supplied checkout/path can select private metadata.
         try:
-            query = parse_qs(urlsplit(self.path).query, strict_parsing=True, max_num_fields=2)
-            if (set(query) != {'revision', 'task'} or any(len(v) != 1 for v in query.values())
+            query = parse_qs(urlsplit(self.path).query, strict_parsing=True, keep_blank_values=True, max_num_fields=3)
+            if (set(query) not in ({'revision', 'task'}, {'revision', 'task', 'iteration'}) or any(len(v) != 1 for v in query.values())
                     or any(not re.fullmatch(r'0|[1-9][0-9]{0,15}', v[0]) for v in query.values())):
                 raise ValueError('Invalid selector')
             revision, index = int(query['revision'][0]), int(query['task'][0])
@@ -255,6 +255,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.respond(409, b'Task selection changed; refresh the snapshot.\n')
             return
         selected = tasks[index]
+        prior_run_id = None
+        if 'iteration' in query:
+            iteration = int(query['iteration'][0])
+            entries = selected.get('earlier_iterations', {}).get('entries', [])
+            if iteration >= len(entries) or not entries[iteration]['report_available']:
+                self.respond(409, b'Earlier iteration unavailable; refresh the snapshot.\n')
+                return
+            prior_run_id = entries[iteration]['run_id']
         if cached['stale']:
             result = unavailable_report('Task report unavailable: the dashboard snapshot is unverified; recorded guidance may be stale.',
                                         selected, cached['discovery'])
@@ -263,7 +271,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.respond(503, b'Report reads are busy; retry shortly.\n')
                 return
             try:
-                result = self.server.report_reader(selected)
+                result = (self.server.report_reader(selected, prior_run_id=prior_run_id) if prior_run_id
+                          else self.server.report_reader(selected))
             except Exception:
                 result = unavailable_report('Task report unavailable: saved evidence could not be read safely. Refresh to retry.', selected)
             finally:
@@ -271,6 +280,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if self.server.collector.snapshot()['revision'] != revision:
             self.respond(409, b'Task selection changed; refresh the snapshot.\n')
             return
+        if prior_run_id:
+            result = dict(result, prior_run_id=prior_run_id)
         body = json.dumps(dict(result, revision=revision, task=index, identity=report_identity(selected)),
                           ensure_ascii=True).encode('utf-8')
         try:

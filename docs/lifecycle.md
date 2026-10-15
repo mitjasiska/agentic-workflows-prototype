@@ -109,7 +109,12 @@ cleanup evidence. At most 64 entries are returned, with `truncated` indicating
 omission. `ordering=source_order` preserves order **within each source**; it does
 not fabricate a cross-source chronology. Missing timestamps remain `null`.
 Interrupted/pause/abort states describe retained boundaries, not every controller
-transition that ever occurred. A replacement loop replaces its checkpoint history.
+transition that ever occurred. Current checkpoint events remain separate from
+`earlier_iterations`, which exposes up to three superseded runs in oldest-first
+replacement order, with run IDs, context IDs, counts, outcomes and report availability.
+Its `state` is `available`, `partial` or `unavailable`; invalid records have unknown
+outcomes. Missing pre-feature history cannot be reconstructed. These counts are
+not lifetime totals and never change current-loop limits, status or guidance.
 No journal or global task-history database is introduced: task Git metadata goes
 away with its worktree; existing registry retirement and cleanup tombstone policies
 remain owned by their lifecycle components.
@@ -151,6 +156,16 @@ exceptions also use diagnostics. No prompts or provider transcripts are exposed.
 Copy success is shown only after the clipboard write succeeds; if clipboard
 access fails, use **Select text** and copy manually. Reports are not archived
 after workspace cleanup.
+
+**Current iteration** shows the active checkpoint's counts and guidance.
+**Earlier iterations** shows retained outcomes separately, including the original
+implementation/reviewer IDs. **Inspect report** selects a verified prior report
+for the same copy/select controls; **Show current report** returns to the active
+run. Old report guidance and clean acceptance are historical only. For example,
+a permitted replacement of a clean R1 with six passes/three reviews by R2 with
+one pass/one review shows both sets of counts; only R2 supplies current status.
+Unavailable or partial evidence disables historical report access without making
+it appear clean or complete.
 
 One shared collector reads persisted state at startup and waits five seconds
 after each completed projection before the next check. All browser clients read
@@ -1205,9 +1220,30 @@ remains a separate, destructive choice that can discard implementation files.
 one current checkpoint: exact bindings/session IDs, requirement fingerprint,
 snapshot, counters/limits, next phase, active pass nonce, routing findings, and
 bounded result summaries needed after a pause. It contains no issue description,
-transcripts, credentials, report archive, or publication approval. A versioned
-result and a post-checkpoint pass-result callback provide integration points for
-future report persistence.
+transcripts, credentials, or publication approval.
+
+A permitted `--new` atomically retains the stopped checkpoint's result evidence
+in the same private SQLite transaction as replacement. Retention is limited to
+three earlier runs, each with at most 256 KiB of checkpoint evidence and 16 KiB of
+identity/count metadata. Oversized evidence retains only that metadata and is
+reported as partial, without a copyable report. Oldest entries are pruned in the
+replacement transaction; failed writes change neither the current checkpoint nor
+history. The current checkpoint remains the sole controller authority. `--extend`
+updates that same run and creates no history entry, and exhausted pending fixes
+still refuse `--new --from-review`. Legacy or already discarded predecessors are
+never reconstructed. Retention is task-local and disappears with normal worktree
+cleanup; existing abandonment evidence and retirement policies are unchanged.
+
+`--new` refuses unfinished publication before replacing or retaining a checkpoint,
+including an intent saved before commit, a failed push/PR operation, or a pending
+rebase. Rerun `task pr` to recover the original operation first; its checkpoint,
+acceptance and intent remain available for that retry.
+
+Publication admission checks acceptance against the current run's saved review
+or a completed standalone review originating in that run. An interruption after
+replacement but before the first new pass cannot reuse the predecessor's clean
+acceptance, even when the checkout is unchanged. Missing or retired historical
+reviewers affect earlier report availability, not current state or guidance.
 
 For an existing implementation context, interruption before the first completion
 or explicit review handoff leaves an unclaimed boundary. Plain `task loop ISSUE`

@@ -1,4 +1,4 @@
-"""One private orchestration checkpoint, not a run-report archive.
+"""One private orchestration checkpoint and bounded superseded result evidence.
 
 Short SQLite transactions serialize pause requests with handoff claims. The
 existing publication lock owns the controller; pause/status never take that lock.
@@ -24,6 +24,16 @@ from .workspace import Git
 PHASES = {"initial_implementation", "implementation", "review", "fixes", "rereview"}
 STATES = {"ready", "running", "paused", "clean", "escalated", "interrupted", "aborting", "aborted"}
 BUDGET_STOP_REASON = "Autonomous pass/review limit reached; human inspection required"
+ITERATION_LIMIT = 3
+ITERATION_BYTES = 256 * 1024
+ITERATION_SUMMARY_BYTES = 16 * 1024
+
+
+def iteration_summary(state):
+    return dict(run_id=state['run_id'], binding=state['binding'], state=state['status'],
+                implementation_context=state['implementation']['context_id'],
+                reviewer_context=state['reviewer']['context_id'] if state['reviewer'] else None,
+                passes=state['pass_count'], reviews=state['review_count'])
 
 
 def _budget_exhausted_boundary(state):
@@ -461,7 +471,74 @@ class LoopStore:
                     raise TaskError("An unfinished handoff exists; inspect its contexts before replacing the checkpoint")
                 if old["status"] == "aborted" and self.abort_journal(old["run_id"]) is None:
                     raise TaskError("Abandonment archive is missing; no replacement loop is safe")
+                if old['binding'] != state['binding'] or old['run_id'] == state['run_id']:
+                    raise TaskError("Replacement must have the same task binding and a new run identity")
+                # Retention and replacement share one commit. No interrupted write
+                # can archive a run that is still current, or lose its predecessor.
+                self.decode((json.dumps(state), 0))
+                summary = json.dumps(iteration_summary(old))
+                if len(summary.encode('utf-8')) > ITERATION_SUMMARY_BYTES:
+                    raise TaskError("Prior iteration identity exceeds the retention bound; checkpoint preserved")
+                payload = json.dumps(old)
+                if len(payload.encode('utf-8')) > ITERATION_BYTES:
+                    payload = None  # Explicit partial evidence, never a truncated report.
+                db.execute("CREATE TABLE IF NOT EXISTS iterations (sequence INTEGER PRIMARY KEY AUTOINCREMENT, "
+                           "run_id TEXT UNIQUE NOT NULL, summary TEXT NOT NULL, payload TEXT, pause INTEGER NOT NULL)")
+                if db.execute("SELECT 1 FROM iterations WHERE run_id=?", (state['run_id'],)).fetchone():
+                    raise TaskError("A retained run identity cannot become the current iteration again")
+                db.execute("INSERT INTO iterations (run_id, summary, payload, pause) VALUES (?, ?, ?, ?)",
+                           (old['run_id'], summary, payload, row[1]))
+                db.execute("DELETE FROM iterations WHERE sequence NOT IN "
+                           "(SELECT sequence FROM iterations ORDER BY sequence DESC LIMIT ?)", (ITERATION_LIMIT,))
             db.execute("INSERT OR REPLACE INTO checkpoint VALUES (1, ?, 0)", (json.dumps(state),))
+
+    def iterations(self):
+        """Bound reads before decoding; legacy stores are never migrated by readers.
+
+        This evidence is intentionally absent from read(), routing, and extension.
+        Unknown/corrupt rows remain unavailable slots, never positive outcomes.
+        """
+        with self.connection() as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='iterations'").fetchone():
+                return None
+            rows = db.execute("SELECT sequence, CASE WHEN length(run_id)=36 THEN run_id END, "
+                "CASE WHEN length(CAST(summary AS BLOB)) <= ? THEN summary END, "
+                "CASE WHEN length(CAST(payload AS BLOB)) <= ? THEN payload END, pause "
+                "FROM iterations ORDER BY sequence DESC LIMIT ?",
+                (ITERATION_SUMMARY_BYTES, ITERATION_BYTES, ITERATION_LIMIT)).fetchall()
+        result = []
+        for sequence, run_id, raw, payload, pause in reversed(rows):
+            entry = dict(order=sequence, summary=None, checkpoint=None, pause=False)
+            try:
+                summary = json.loads(raw, object_pairs_hook=unique_object)
+                if (type(sequence) is not int or sequence < 1 or str(UUID(run_id)) != run_id
+                        or set(summary) != {'run_id', 'binding', 'state', 'implementation_context',
+                                            'reviewer_context', 'passes', 'reviews'}
+                        or summary['run_id'] != run_id or summary['state'] not in STATES - {'ready', 'running', 'aborting'}
+                        or type(summary['passes']) is not int or type(summary['reviews']) is not int
+                        or not 0 <= summary['passes'] <= 40
+                        or not 0 <= summary['reviews'] <= min(20, summary['passes']) or pause not in (0, 1)):
+                    raise ValueError('Invalid iteration summary')
+                target = summary['binding']
+                if (set(target) != {'issue', 'repository', 'worktree', 'branch', 'workspace_id', 'endpoint', 'base_branch'}
+                        or any(not isinstance(v, str) or not v for v in target.values())):
+                    raise ValueError('Invalid iteration binding')
+                for key, role in (('implementation_context', 'I'), ('reviewer_context', 'R')):
+                    if key == 'reviewer_context' and summary[key] is None:
+                        continue
+                    if not re.fullmatch(re.escape(target['issue']) + f'-{role}[1-9][0-9]*', summary[key]):
+                        raise ValueError('Invalid iteration context')
+                if payload is not None:
+                    checkpoint, _ = self.decode((payload, pause))
+                    if (iteration_summary(checkpoint) != summary or checkpoint['active_pass'] is not None
+                            or checkpoint.get('delivery')):
+                        raise ValueError('Conflicting iteration evidence')
+                    entry['checkpoint'] = checkpoint
+                entry.update(summary=summary, pause=bool(pause))
+            except (TaskError, KeyError, ValueError, TypeError, AttributeError, RecursionError):
+                pass
+            result.append(entry)
+        return result
 
     def save(self, state):
         with self.connection(write=True) as db:

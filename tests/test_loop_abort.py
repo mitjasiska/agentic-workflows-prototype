@@ -113,6 +113,9 @@ class AbortTests(unittest.TestCase):
         self.assertEqual(len(self.prompts), 2)
         self.assertEqual(self.content(), before)
         self.assertEqual(self.store.abort_journal(original["run_id"]), archived)
+        prior, = self.store.iterations()
+        self.assertEqual(prior['checkpoint']['run_id'], original['run_id'])
+        self.assertEqual(prior['checkpoint']['status'], 'aborted')
 
     def test_interrupted_implementation_and_fixes_require_explicit_continuation(self):
         for phase in ("implementation", "fixes"):
@@ -167,6 +170,7 @@ class AbortTests(unittest.TestCase):
         self.assertEqual(self.store.abort_journal(second["run_id"])["original"], second)
         self.assertEqual([c["state"] for c in self.registry.list(include_retired=True)],
                          ["active", "abandoned", "abandoned"])
+        self.assertEqual([e['summary']['run_id'] for e in self.store.iterations()], [first['run_id']])
 
     def test_interrupted_rereview_preserves_fixes_and_starts_fresh_review(self):
         original = self.interrupt("rereview")

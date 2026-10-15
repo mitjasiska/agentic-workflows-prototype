@@ -229,6 +229,9 @@ class HTTPTests(unittest.TestCase):
         for query in ('', '?path=/etc/passwd', '?revision=1&task=/etc/passwd', '?revision=1&task=-1',
                       '?revision=1&task=0&path=/etc/passwd', '?revision=1&task=0&task=1',
                       '?revision=1&task=0.0', '?revision=01&task=0', '?revision=1&task=%2e%2e',
+                      '?revision=1&task=0&iteration=/etc/passwd', '?revision=1&task=0&iteration=-1',
+                      '?revision=1&task=0&iteration=',
+                      '?revision=1&task=0&iteration=0&iteration=1', '?revision=1&task=0&iteration=01',
                       '?revision=1&task=9999999999999999999999', '?revision=&task=0'):
             response, _ = self.request('/api/report' + query)
             self.assertEqual(response.status, 400, query)
@@ -236,6 +239,26 @@ class HTTPTests(unittest.TestCase):
             response, _ = self.request('/api/report' + query)
             self.assertEqual(response.status, 409, query)
         self.report_reader.assert_not_called()
+
+    def test_historical_report_selector_is_bound_to_cached_run_and_read_permissions(self):
+        selected = self.source['tasks'][0]
+        selected['earlier_iterations'] = dict(entries=[dict(run_id='retained-run', report_available=True),
+                                                       dict(run_id=None, report_available=False)])
+        self.collector.refresh()
+        response, body = self.request('/api/report?revision=2&task=0&iteration=0')
+        self.assertEqual(response.status, 200)
+        self.assertEqual(json.loads(body)['prior_run_id'], 'retained-run')
+        self.report_reader.assert_called_with(selected, prior_run_id='retained-run')
+        self.assertEqual(response.getheader('Cache-Control'), 'no-store')
+        self.assertIsNone(response.getheader('Access-Control-Allow-Origin'))
+        for selector in ('1', '2', '9999999999999999'):
+            response, _ = self.request('/api/report?revision=2&task=0&iteration=' + selector)
+            self.assertEqual(response.status, 409)
+        for method in ('POST', 'PUT', 'DELETE'):
+            response, _ = self.request('/api/report?revision=2&task=0&iteration=0', method)
+            self.assertEqual(response.status, 405)
+        response, _ = self.request('/api/report?revision=2&task=0&iteration=0', headers={'Origin': 'https://evil.example'})
+        self.assertEqual(response.status, 403)
 
     def test_report_stale_discovery_and_read_failure_return_safe_diagnostics(self):
         self.reader.return_value = None
@@ -540,6 +563,44 @@ class CanonicalAdaptationTests(unittest.TestCase):
             self.assertEqual(body['kind'], 'diagnostics')
             self.assertIn('No saved loop report exists', body['text'])
             self.assertFalse(fixture.store.path.exists())
+        finally:
+            connection.close()
+            collector.close()
+            server.shutdown()
+            server.server_close()
+            thread.join(2)
+
+    def test_prior_report_from_real_replacement_and_pruned_cached_selection(self):
+        fixture = self.fixture
+        expected = fixture.run_loop().render()
+        old = fixture.store.read()[0]
+        fixture.run_loop(action='new', from_review=True)
+        collector = dashboard.SnapshotCollector(lambda: fixture.report(None))
+        collector.refresh()
+        server = dashboard.DashboardServer(collector, port=0, report_reader=lambda task, **kw: task_loop_report(task,
+            registry=fixture.registry, identities=fixture.identities, projects=fixture.projects,
+            projects_root=fixture.repo.parent, **kw))
+        thread = threading.Thread(target=server.serve_forever, kwargs=dict(poll_interval=.01))
+        thread.start()
+        connection = http.client.HTTPConnection('127.0.0.1', server.server_port, timeout=10)
+        try:
+            connection.request('GET', REPORT_URL + '&iteration=0')
+            response = connection.getresponse()
+            body = json.loads(response.read())
+            self.assertEqual(response.status, 200)
+            self.assertEqual(body['kind'], 'report')
+            self.assertEqual(body['prior_run_id'], old['run_id'])
+            self.assertEqual(body['text'], expected)
+            self.assertNotIn(expected, json.dumps(collector.snapshot()))
+            # Retention changes before the collector refreshes. Never substitute
+            # the current run for this cached historical selection.
+            with fixture.store.connection(write=True) as db:
+                db.execute('DELETE FROM iterations')
+            connection.request('GET', REPORT_URL + '&iteration=0')
+            response = connection.getresponse()
+            body = json.loads(response.read())
+            self.assertEqual(body['kind'], 'unavailable')
+            self.assertIsNone(body['text'])
         finally:
             connection.close()
             collector.close()
