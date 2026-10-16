@@ -3,8 +3,9 @@
 [Project overview](../README.md) · [Configuration](configuration.md) · [Architecture](architecture.md)
 
 Command behavior, invariants, and refusal/retry cases for Agentic Workflows Prototype
-(AWP), whose first public release is a **Developer Preview**. Start with the
-[README](../README.md#using-the-workflow) for the human workflow and command choices.
+(AWP), whose intended first public release is a **Developer Preview**. Start with the
+[README](../README.md#using-the-workflow) for the human workflow and the
+[CLI reference](../README.md#cli-reference) for commands and options.
 
 - [Start and status transition](#task-start)
 - [Implementation readiness outcomes](#implementation-readiness-outcomes)
@@ -20,8 +21,8 @@ Command behavior, invariants, and refusal/retry cases for Agentic Workflows Prot
 
 ## Task status
 
-`task status ISSUE` and `task status ISSUE --json` inspect local evidence without
-changing workflow state. `task status --all` (also with `--json`) is the dashboard
+`awp status ISSUE` and `awp status ISSUE --json` inspect local evidence without
+changing workflow state. `awp status --all` (also with `--json`) is the dashboard
 discovery seam. These commands use the same canonical projection in
 [`status.py`](../task_start/status.py); text rendering contains no separate workflow
 interpretation. They do not fetch Linear/GitHub, poll provider history, take
@@ -81,7 +82,7 @@ selector errors exit nonzero. Consumers must inspect the model's state.
 Operator hints are read-only. A running/ready loop with an observed owning
 controller does not require intervention. An unowned controller lock plus a
 validated active claim, retained delivery coordinates/receipt and matching context
-identity, HEAD, base and scope can suggest repeating `task loop ISSUE` to **try
+identity, HEAD, base and scope can suggest repeating `awp loop ISSUE` to **try
 observation of the original pass**. This never resends it, and later provider/runtime verification
 can still refuse recovery. Review additionally requires the entire pinned snapshot;
 uncommitted implementation edits are allowed. Known drift calls for inspection
@@ -121,7 +122,7 @@ remain owned by their lifecycle components.
 
 ## Task dashboard
 
-Run `task dashboard` and open its printed URL (normally
+Run `awp dashboard` and open its printed URL (normally
 `http://127.0.0.1:8765`). `--port PORT` selects another port, and `--port 0`
 asks the OS for a free port. The server always binds to `127.0.0.1`; it has no
 public-listen option. Ctrl+C, SIGTERM, or SIGHUP stops the dashboard without
@@ -146,7 +147,7 @@ remote Linear/GitHub refresh.
 
 The selected task's **Task report** area offers **Copy report** and an expandable,
 selectable plain-text view. Verified saved loops use the same complete rendering
-as `task loop ISSUE --status`, including findings, fixes, every recorded check
+as `awp loop ISSUE --status`, including findings, fixes, every recorded check
 (also `not_run`), final state, and human-intervention reasons. Paused, interrupted,
 and escalated loops retain available partial outcomes without implying success.
 Missing, unreadable, stale, or ambiguous evidence produces an unavailable state;
@@ -199,7 +200,7 @@ To view a dashboard running on another machine, create your own SSH tunnel:
 
 ```sh
 # On the workflow machine:
-task dashboard --port 8765
+awp dashboard --port 8765
 # On the machine running your browser:
 ssh -N -L 8765:127.0.0.1:8765 user@workflow-host
 ```
@@ -213,7 +214,7 @@ configuration added by AWP.
 
 ### Optional private Tailscale Serve access
 
-Tailscale and background operation are optional; ordinary `task dashboard` still
+Tailscale and background operation are optional; ordinary `awp dashboard` still
 works in the foreground with only localhost HTTP access. To use a private HTTPS
 URL without SSH forwarding, use your own Linux Tailscale installation and one
 explicit AWP option:
@@ -249,7 +250,7 @@ device or Tailscale restarts; it needs no additional supervisor. See the
 For an initial foreground check, run from your permanent AWP checkout:
 
 ```sh
-task dashboard --port 8765 --trusted-origin 'https://<device>.<tailnet>.ts.net'
+awp dashboard --port 8765 --trusted-origin 'https://<device>.<tailnet>.ts.net'
 ```
 
 AWP still listens only on `127.0.0.1`; local HTTP access remains available. The
@@ -356,7 +357,7 @@ After the one-time setup above, check your installation:
 A repository is resolved as `projects_root / repo_name`. Each must be its permanent Git
 checkout, already on the configured base branch, with a clean working tree (including
 untracked files) and no unfinished Git operation. The base must track a same-named
-branch on a remote. `task start` fetches that upstream into `FETCH_HEAD` and updates
+branch on a remote. `awp start` fetches that upstream into `FETCH_HEAD` and updates
 using `merge --ff-only`; it refuses local-only commits or divergence. It does not
 switch, stash, reset, or force-update branches.
 
@@ -401,7 +402,7 @@ configured marker's presence; it does not parse, extract, or privilege its conte
 require other headings, or validate publication labels. The complete description
 is passed unchanged in all three modes.
 
-`task start ISSUE --no-agent` performs the same workspace preparation and Linear
+`awp start ISSUE --no-agent` performs the same workspace preparation and Linear
 transition without starting an agent. It does not require an `Agent instructions`
 block, `[agent]`, or an installed agent and cannot be combined with `--agent`,
 `--model`, or `--mode`.
@@ -422,7 +423,7 @@ The agent emits a small structured outcome in its conversation before edits:
 
 `ready` proceeds automatically in the same turn. `blocked` has a concise summary
 and a nonempty `questions` list of specific blockers, and ends the turn before
-implementation mutations. Interactive `task start` remains a launch command:
+implementation mutations. Interactive `awp start` remains a launch command:
 its exit status confirms handoff delivery, not assessment or implementation
 completion. Read the structured outcome in the implementation pane and supply
 clarification there; the agent reassesses and continues outstanding work in that
@@ -448,7 +449,7 @@ the assessment gate. Normal workspace preparation and Linear status transition
 have already occurred before the agent receives the task.
 
 After the user resolves the questions (in the existing conversation or by updating
-Linear), inspect the idle context and use `task loop ISSUE --new`. The workflow
+Linear), inspect the idle context and use `awp loop ISSUE --new`. The workflow
 fetches the current issue and resumes the same verified implementation conversation;
 it does not relaunch the initial agent. A ready reassessment proceeds to ordinary
 implementation and independent review. `--continue` cannot resume an escalated
@@ -461,7 +462,7 @@ interruption refusal, pass limits, and stop behavior are unchanged. See
 An existing workspace is reused only when Git and Herdr agree on one usable branch
 and checkout. Dirty task worktrees are preserved; the permanent base checkout
 must remain clean. Branch-only, locked, prunable, inconsistent, or ambiguous state
-stops with an error. `task start` never deletes a branch, worktree, workspace, or
+stops with an error. `awp start` never deletes a branch, worktree, workspace, or
 session. Scope is recorded in `agentic-workflows-scope.json` in the worktree's
 private Git directory (`git rev-parse --absolute-git-dir`), outside tracked files.
 The record contains only its version, issue identifier, branch and slice name
@@ -471,11 +472,11 @@ The default remains one issue, one branch, one PR. For multiple implementation
 slices, select a stable name explicitly:
 
 ```sh
-task start DEV-13 --slice codex-handoff
-task start DEV-13 --slice workspace-lifecycle
+awp start TEAM-123 --slice codex-handoff
+awp start TEAM-123 --slice workspace-lifecycle
 ```
 
-These create/reuse `dev-13-codex-handoff` and `dev-13-workspace-lifecycle`.
+These create/reuse `team-123-codex-handoff` and `team-123-workspace-lifecycle`.
 Slice names normalize accents, case, spaces and underscores to an ASCII branch
 suffix; empty names, path/ref syntax, control characters and suffixes over 100
 characters are rejected. The prompt names the slice and instructs the selected
@@ -551,11 +552,11 @@ readiness checks, delivery guarantees, and timeouts.
 
 ### Codex first-use trust and setup
 
-For `task start`, initial `task loop` implementation, fresh `task review`, and
-`task integrate`, a recognized Codex **Trust this folder?** menu or sign-in method menu pauses the
+For `awp start`, initial `awp loop` implementation, fresh `awp review`, and
+`awp integrate`, a recognized Codex **Trust this folder?** menu or sign-in method menu pauses the
 original workflow command before task delivery. The message identifies the context,
 checkout, workspace, pane, terminal and any already observed provider session.
-`task contexts ISSUE` shows `awaiting_user`.
+`awp contexts ISSUE` shows `awaiting_user`.
 This works with any checkout path, including newly created isolated checkouts.
 
 1. Keep the original workflow command running. Inspect the identified Codex pane
@@ -602,17 +603,17 @@ already have happened, so inspect the exact session and never blindly resend.
 Review the existing task checkout in a new independent reviewer pane:
 
 ```sh
-task review DEV-20
-task review DEV-20 --agent pi --model <provider/model> --mode high
-task review DEV-20 --resume DEV-20-R2
-task review DEV-20 --resume DEV-20-R2 --json
+awp review TEAM-123
+awp review TEAM-123 --agent pi --model <provider/model> --mode high
+awp review TEAM-123 --resume TEAM-123-R2
+awp review TEAM-123 --resume TEAM-123-R2 --json
 ```
 
 Configure `[reviewer]` separately from implementation; see
 [agent and reviewer selection](configuration.md#agent-and-reviewer-selection).
 
-The fresh form always allocates the next review context (`DEV-20-R1`,
-`DEV-20-R2`, etc.). It splits a pane in the existing task tab, preserving focus,
+The fresh form always allocates the next review context (`TEAM-123-R1`,
+`TEAM-123-R2`, etc.). It splits a pane in the existing task tab, preserving focus,
 and labels it with that exact context ID. It never prepares another worktree or
 inherits implementation or previous reviewer conversation. Codex and Pi use the
 shared execution adapters and repository permission profiles. Those permission
@@ -671,7 +672,7 @@ Under `focused_first`, both findings and clean passes use relevant focused check
 an otherwise-clean review does not trigger a full-suite run. Checks explicitly
 required locally or on every pass still apply.
 The implementer fixes the batch and reruns relevant tests, then the same reviewer
-rechecks fixes and regressions (`task review --resume` or the loop's automatic
+rechecks fixes and regressions (`awp review --resume` or the loop's automatic
 re-review). `exhaustive` requests full validation even on findings passes, with
 the same inspection and batching obligations.
 
@@ -834,23 +835,23 @@ Exit status is 0 for clean, 2 for findings, 3 for blocked/invalidated, and 1 for
 failure. Missing/malformed output cannot be clean; drift overrides any model verdict.
 Preflight errors stop before a pass exists and are reported on stderr. Findings,
 validation limitations, and stopped/blocked agents require human action when using
-this single-pass command. Automatic findings routing is an explicit `task loop` action.
+this single-pass command. Automatic findings routing is an explicit `awp loop` action.
 
 ## Task loop
 
 ```sh
-task loop DEV-20
-task loop DEV-20 --from-review
-task loop DEV-20 --r-agent codex --r-model gpt-6-astra --r-mode high --max-reviews 3 --max-passes 6
-task loop DEV-20 --i-agent codex --i-model gpt-6-astra --i-mode high
-task loop DEV-20 --pause-after-current
-task loop DEV-20 --status --json
-task loop DEV-20 --continue
-task loop DEV-20 --abort
+awp loop TEAM-123
+awp loop TEAM-123 --from-review
+awp loop TEAM-123 --r-agent codex --r-model gpt-6-astra --r-mode high --max-reviews 3 --max-passes 6
+awp loop TEAM-123 --i-agent codex --i-model gpt-6-astra --i-mode high
+awp loop TEAM-123 --pause-after-current
+awp loop TEAM-123 --status --json
+awp loop TEAM-123 --continue
+awp loop TEAM-123 --abort
 ```
 
-With no implementation context, `task loop ISSUE` prepares
-and runs the initial implementation itself. It shares `task start`'s configurable
+With no implementation context, `awp loop ISSUE` prepares
+and runs the initial implementation itself. It shares `awp start`'s configurable
 issue structure preflight, project/base resolution, base update, default workspace
 create/reuse, and Linear `In Progress` transition. Both implementation and reviewer selections
 are validated before preparation mutates Git, Herdr, or Linear. Preparation
@@ -858,7 +859,7 @@ failure prevents the Linear update; a failed Linear update leaves the prepared
 workspace but allocates no context and launches no agent.
 
 This entry supports only the unsliced default workspace, including a workspace
-prepared earlier with `task start --no-agent`. Existing slice scope, ambiguous or
+prepared earlier with `awp start --no-agent`. Existing slice scope, ambiguous or
 historical workspaces, and conflicting context history are refused. Retired contexts
 permit a fresh start only when each exactly matches a validated completed forced
 cleanup journal in this repository. Pending disposal, missing provenance, changed
@@ -870,25 +871,25 @@ result contract. Validated completion proceeds directly to fresh review, without
 an extra implementation turn just to collect completion. Blocked, failed, malformed,
 timed-out, or uncertain delivery stops before review. Idleness is never completion.
 
-Normal configured use is `task loop ISSUE`, with initial implementation settings
+Normal configured use is `awp loop ISSUE`, with initial implementation settings
 from `[agent]` and fresh reviewer settings from `[reviewer]`. Optional `--i-agent`,
 `--i-model`, and `--i-mode` override implementation; `--r-agent`, `--r-model`, and
 `--r-mode` override review. Each option resolves independently over its role's
 configuration. Both roles require explicit resolved model and mode before mutation.
 The loop rejects generic `--agent`, `--model`, and `--mode`; those flags are unchanged
-on `task start` and `task review`. Implementation overrides are refused when a
+on `awp start` and `awp review`. Implementation overrides are refused when a
 context already exists (except matching saved selections during pre-handoff
 startup recovery), with `--from-review`, and with controls. Existing
 implementation contexts always retain their recorded settings.
 
-When an exact implementation context already exists, plain `task loop ISSUE`
+When an exact implementation context already exists, plain `awp loop ISSUE`
 continues from a current durably verified completion in its saved checkpoint
 directly to fresh independent review. Without completion evidence (including an
-ordinary `task start`), it resumes the same idle implementation conversation to
+ordinary `awp start`), it resumes the same idle implementation conversation to
 finish outstanding work and validation and collect structured completion. It then
 starts review automatically. Idleness alone never establishes completion.
 
-A completed fresh standalone `task review` with a retained handoff can supply the review boundary.
+A completed fresh standalone `awp review` with a retained handoff can supply the review boundary.
 The loop verifies its private handoff against current requirements, Git/base/scope,
 context history, original implementation session and exact reviewer session and
 completed provider receipt. It rechecks live mappings, context health and idle
@@ -998,7 +999,7 @@ resolves its external prerequisite (for example, browser access) and explicitly
 runs:
 
 ```sh
-task loop DEV-20 --retry-review
+awp loop TEAM-123 --retry-review
 ```
 
 The command retains the checkpoint, checkout, settings, limits, and original
@@ -1046,7 +1047,7 @@ claim. A public `--pause-after-current` request at an eligible blocked boundary
 records sticky pause intent without authorizing continuation. It remains sticky
 through retry preflight, including failed preflight; successful retry authorization
 then stops at a paused boundary until `--continue`. Repeating `--retry-review`
-cannot resend an authorized pass: after interruption, use the ordinary `task loop DEV-20` command
+cannot resend an authorized pass: after interruption, use the ordinary `awp loop TEAM-123` command
 to reconcile the saved boundary or claim; use `--continue` for a resulting pause.
 If result collection stopped before disposing retained delivery evidence, first
 use the ordinary loop command to finish collection/disposal, then explicitly
@@ -1067,9 +1068,9 @@ After inspecting a loop stopped solely because its autonomous pass/review budget
 was exhausted, explicitly increase its saved **total** limits:
 
 ```sh
-awp loop DEV-20 --extend --max-passes 10 --max-reviews 5
+awp loop TEAM-123 --extend --max-passes 10 --max-reviews 5
 # The source entry point supports the same control:
-./task loop DEV-20 --extend --max-passes 10 --max-reviews 5
+./task loop TEAM-123 --extend --max-passes 10 --max-reviews 5
 ```
 
 For a six-pass/three-review stop with F4 pending at `next_phase=fixes`, this keeps
@@ -1104,7 +1105,7 @@ history or substituting another conversation.
 
 Authorization atomically updates only limits and control state before returning
 to normal routing and receipt recovery. A racing pause stays sticky and requires
-`--continue`. After controller interruption, repeat the ordinary `awp loop DEV-20`
+`--continue`. After controller interruption, repeat the ordinary `awp loop TEAM-123`
 to reconcile the authorized boundary or original claim; do not repeat `--extend`
 to replay work. The command never resends a claimed pass.
 
@@ -1186,7 +1187,7 @@ also exits 0, with state `aborted`, never `clean`.
 ### Explicit abort without discarding work
 
 Ctrl+C interrupts the controller; it does **not** authorize abandonment or stop
-the terminal-owned agent. Repeating `task loop ISSUE` observes the original pass.
+the terminal-owned agent. Repeating `awp loop ISSUE` observes the original pass.
 An interrupted agent turn may leave that controller waiting for a result that
 will never arrive. To deliberately abandon that pass:
 
@@ -1197,13 +1198,13 @@ will never arrive. To deliberately abandon that pass:
    at an idle prompt, back to their original shells. Keep those panes open and
    stop their child/background jobs. Quitting retains persisted conversations.
 3. From outside the task checkout, on Herdr's host/PID namespace, run
-   `task loop ISSUE --abort`. Inspect `task loop ISSUE --status --json` as needed.
+   `awp loop ISSUE --abort`. Inspect `awp loop ISSUE --status --json` as needed.
 
 Abort uses the selected worktree lock. Another controller on that worktree
 refuses it; independent workspace loops may continue. It requires exact saved issue/checkout/branch, context,
 provider, pane and terminal identities; positive idle-shell executable, argv,
 TTY, PID/start-time and process-family evidence; and readable Linux `/proc`.
-For the trusted single-user **Linux V1 Developer Preview**, this proof covers the
+For the trusted single-user **Linux V1 prototype**, this proof covers the
 registered execution: original shells, live descendants and related threads,
 background jobs, and process-group/session members, including observable
 reparented workers. It uses host process enumeration/stat data to establish that
@@ -1218,7 +1219,7 @@ abort transaction rechecks them before writing its journal. Genuinely vanished
 unrelated entries are tolerated when family evidence remains complete. Missing,
 replaced, running or unverifiable registered shells, PID reuse, live attributable
 workers and unresolved observation races refuse. On refusal, inspect
-`task contexts ISSUE --all` and the original panes, stop remaining task jobs, and
+`awp contexts ISSUE --all` and the original panes, stop remaining task jobs, and
 retry `--abort` from outside the checkout on the same Linux host/PID namespace.
 Keep the original shells open; do not replace panes or edit the claim to bypass
 missing evidence. A missing pane or an `idle` label alone never proves stoppage.
@@ -1259,12 +1260,12 @@ separate; abort only retires the reviewer of its exact unfinished loop pass.
 
 After abort, resume the saved implementation conversation in its original pane
 using the provider's native session selector, without submitting new work yet.
-The abort/status report prints that exact session ID or path; `task contexts ISSUE`
+The abort/status report prints that exact session ID or path; `awp contexts ISSUE`
 locates its pane and recorded settings, without requiring private database edits.
-For an aborted review/re-review, `task loop ISSUE --new --from-review` starts a
+For an aborted review/re-review, `awp loop ISSUE --new --from-review` starts a
 fresh independent reviewer after rechecking the preserved completion boundary.
 For interrupted implementation/fixes, inspect the preserved work and run
-`task loop ISSUE --new` to explicitly continue implementation and validation;
+`awp loop ISSUE --new` to explicitly continue implementation and validation;
 `--from-review` refuses to infer completion. A proven undelivered, sessionless
 initial reservation can likewise use `--new` in its original empty shell.
 A Pi session containing only its startup header requires explicit native
@@ -1295,7 +1296,7 @@ cleanup; existing abandonment evidence and retirement policies are unchanged.
 
 `--new` refuses unfinished publication before replacing or retaining a checkpoint,
 including an intent saved before commit, a failed push/PR operation, or a pending
-rebase. Rerun `task pr` to recover the original operation first; its checkpoint,
+rebase. Rerun `awp pr` to recover the original operation first; its checkpoint,
 acceptance and intent remain available for that retry.
 
 Publication admission checks acceptance against the current run's saved review
@@ -1305,7 +1306,7 @@ acceptance, even when the checkout is unchanged. Missing or retired historical
 reviewers affect earlier report availability, not current state or guidance.
 
 For an existing implementation context, interruption before the first completion
-or explicit review handoff leaves an unclaimed boundary. Plain `task loop ISSUE`
+or explicit review handoff leaves an unclaimed boundary. Plain `awp loop ISSUE`
 revalidates that exact saved context, requirements and Git snapshot before claiming
 the pending pass. A pending pause remains sticky. This does not authorize replay
 of any claimed prompt or replacement of a competing standalone review claim.
@@ -1319,7 +1320,7 @@ identity is retained in the registry immediately and added to the checkpoint as
 soon as it can be verified. Launch, provider verification, and polling share one
 persistence observer, so later Pi path-only reports retain the verified immutable
 conversation ID. The same session must serve later fixes. Pi initial
-loop launches load the session reporter used by review; ordinary `task start`
+loop launches load the session reporter used by review; ordinary `awp start`
 launch arguments are unchanged.
 
 Read-only Linear issue retrieval retries HTTP 408, 429, 500, 502, 503 and 504,
@@ -1333,7 +1334,7 @@ the issue again before deciding whether an update is still needed. A confirmed
 `In Progress` state needs no write.
 
 An availability failure after reservation but before the first handoff reports
-that you can repeat the ordinary `task loop ISSUE` command. That command can
+that you can repeat the ordinary `awp loop ISSUE` command. That command can
 recover an **escalated version-3 initial checkpoint** only when it has zero passes
 and reviews, no active claim, no provider identity, no reviewer or completed
 records, and no findings/history. This includes checkpoints from before this
@@ -1380,7 +1381,7 @@ provider delivery evidence was saved, still requires inspection. Historical
 controller-lifetime temporary output cannot establish recovery evidence.
 
 For new controller-owned implementation, fix, review, and re-review passes, repeat
-`task loop DEV-20` after Ctrl+C, SIGTERM, SIGHUP/terminal disconnect, or controller
+`awp loop TEAM-123` after Ctrl+C, SIGTERM, SIGHUP/terminal disconnect, or controller
 termination. The publication lock first excludes another controller. The command
 then validates the saved requirements, issue/worktree/base, context, model/mode,
 provider conversation and exact pane/terminal. It observes the same pass while
@@ -1461,7 +1462,7 @@ fully aborted run requests a new loop with a fresh reviewer.
 ## Task pr
 
 ```sh
-task pr DEV-20
+awp pr TEAM-123
 ```
 
 Running this command authorizes commit, push, and PR creation/update without a
@@ -1490,7 +1491,7 @@ credentials, or general run archive. Failed/blocked/findings results never creat
 acceptance. Beginning another review explicitly revokes the current acceptance and
 publishing intent, including if that new pass is interrupted. Outside the
 unpublished rebase path, once a publication commit exists, publication must finish
-through `task pr` before another review can replace that contract. Completed cycles
+through `awp pr` before another review can replace that contract. Completed cycles
 retain their own acceptance and intent. Completed rebase provenance survives a new
 review only while its exact resulting Git state is unchanged. It authorizes commit
 reuse, never publication without fresh clean
@@ -1511,7 +1512,7 @@ the actual reviewed implementation. This is metadata generation within the
 existing read-only review handoff; it cannot select Git/GitHub identities or
 perform publishing actions. After automatic rebase, the handoff instead asks the
 reviewer to validate the already-frozen title/body, as described below.
-`task pr` has no second model invocation and never
+`awp pr` has no second model invocation and never
 falls back to copying a possibly stale task title or private review checks.
 Initial clean verdicts without publishing metadata require a new review.
 
@@ -1519,7 +1520,7 @@ Exactly one canonical primary Linear category label resolves the type:
 `Feature` → `feat`, `Bug` → `fix`, `Chore` → `chore`, `Docs` → `docs`,
 `Refactor` → `refactor`. Other labels, including `Research`, do not select a type.
 Missing or conflicting categories refuse publication. Both commit subject and PR
-title use `<type>: <concise actual change> (DEV-20)`. The body contains `Summary`,
+title use `<type>: <concise actual change> (TEAM-123)`. The body contains `Summary`,
 `Tracking`, and `Validation`, with a stable linked Linear issue reference in
 `Tracking`. Only approved public prose is copied into it; private reviewer
 findings and task instructions are not used as a fallback. Public-safety judgment
@@ -1587,7 +1588,7 @@ between observations cannot be detected.
 ### Follow-up publication
 
 After a task PR is published, keep additional task edits uncommitted in the same
-checkout until they pass a fresh independent `task review`. Then run `task pr`
+checkout until they pass a fresh independent `awp review`. Then run `awp pr`
 to append one new publishing commit to the existing branch and reuse the same PR.
 Already-published commits are never rewritten. Staged, unstaged and new files can
 all participate. Each cycle
@@ -1675,8 +1676,8 @@ step. A compare-and-swap branch update completes installation without running a
 rebase sequencer in the real task worktree.
 
 The command then stops with an explicit requirement for a new independent
-`task review`. It cannot push or create a PR in that invocation. A pending
-installation must finish through `task pr` before review; retries verify saved
+`awp review`. It cannot push or create a PR in that invocation. A pending
+installation must finish through `awp pr` before review; retries verify saved
 commit IDs and the allowed source/target checkout states. If files reached the
 planned target but index replacement was interrupted, the original index and
 HEAD must still match the source; retry installs the proven target index and
@@ -1772,7 +1773,7 @@ and after the final GitHub lookup remain fresh, and local state is checked after
 native transport. These reductions do not cache credentials or change Git/SSH
 configuration; native prompts remain in the invoking terminal.
 
-| Interruption | Next `task pr` invocation |
+| Interruption | Next `awp pr` invocation |
 | --- | --- |
 | Before commit | Recheck acceptance and saved intent, then commit once. |
 | Commit completed, including a lost command acknowledgement | Require the frozen SHA if present; otherwise prove parent/tree/message/content and freeze the recovered SHA. Finish the index update if needed and reuse that commit. |
@@ -1784,7 +1785,7 @@ configuration; native prompts remain in the invoking terminal.
 | Rebase installation interrupted | Verify and reuse the saved replacement commits, finish only a provable checkout/ref transition, then require review. |
 | Fresh review after rebase | Require explicit approval of the frozen title/body for the reviewed state; reuse the exact rebased commit and metadata through push/PR. |
 | New edits after completed publication | Obtain a new clean review at the latest published HEAD; append one commit and reuse the recorded PR. |
-| New review during unfinished publication | Refuse before replacing acceptance/intent; finish the frozen cycle with `task pr`. |
+| New review during unfinished publication | Refuse before replacing acceptance/intent; finish the frozen cycle with `awp pr`. |
 | Files/index/history/identity conflicts, or base change after publication | Stop without force or repair; inspect the reported state. A new review cannot bypass published ancestry, PR identity or the pinned base. |
 
 Do not delete or edit acceptance/intent records to bypass refusal. Rerunning `pr`
@@ -1803,7 +1804,7 @@ JSON. Diagnostics use fixed guidance and allowlisted validation field/code names
 raw response bodies, arbitrary headers, exception text, and request payloads are
 not echoed. Publishing refuses missing/malformed credentials before transport.
 A failed write is never automatically replayed: a connection failure, service
-error, or unreadable response may follow a successful write. Rerun `task pr`
+error, or unreadable response may follow a successful write. Rerun `awp pr`
 after addressing the cause; it discovers and verifies any matching PR before
 deciding whether another create/update request is necessary.
 
@@ -1821,14 +1822,14 @@ supplies credentials to a prompt or weakens authentication.
 ## Task integrate
 
 ```sh
-task integrate DEV-20
-task integrate DEV-20 --agent codex --model gpt-6-astra --mode high
-task integrate DEV-20 --timeout 1800
+awp integrate TEAM-123
+awp integrate TEAM-123 --agent codex --model gpt-6-astra --mode high
+awp integrate TEAM-123 --timeout 1800
 ```
 
 Use this explicit recovery command when an unpublished, clean-reviewed task has
 uncommitted implementation changes and the base has advanced into a conflict.
-`task pr` remains the deterministic first attempt and never invokes an integration
+`awp pr` remains the deterministic first attempt and never invokes an integration
 agent. `integrate` independently repeats all prerequisites and the disposable
 replay; no earlier failed `pr` or conflict journal is required. A conflict-free
 probe directs the caller back to `pr`. Setup errors do not count as conflicts.
@@ -1851,7 +1852,7 @@ The existing workspace's recorded slice is included in the handoff and retained
 in integration provenance, as in task start/review. When a slice is recorded,
 only that slice is integrated; other issue requirements remain context. Ambiguous
 slice scope requires `human_decision`. Scope drift refuses installation, including
-continuation of a proven installation through `task pr`.
+continuation of a proven installation through `awp pr`.
 
 The configured remote and authoritative base/task refs are checked, all PR
 history participates, and the clean permanent checkout may fast-forward to the
@@ -1865,7 +1866,7 @@ the agent resolves with ordinary file edits, creation, and deletion. It does not
 stage or remove files through Git, write Git metadata, or create commits. Unmerged
 index entries remain during the agent pass; staging belongs to the controller.
 
-A fresh `DEV-20-G1` context binds that checkout and a separate pane, preserving
+A fresh `TEAM-123-G1` context binds that checkout and a separate pane, preserving
 the original implementation context. The handoff includes current Linear
 requirements, exact accepted source fingerprint and identity, updated base,
 and conflicted index entries. Prompt delivery and provider verification use the
@@ -1905,12 +1906,12 @@ acceptance and intent and saves the rebase journal. The normal installer creates
 workflow-owned local commit history, honoring normal signing, and uses a private
 index, exclusive real-index lock, repeated local proof/source checks, and compare-and-swap
 branch update. The command stops after local installation; it never publishes or
-marks the Linear issue complete. A fresh independent `task review` of the installed
+marks the Linear issue complete. A fresh independent `awp review` of the installed
 state against the frozen base SHA B, including the frozen public title/body, is
-mandatory before `task pr` can publish. Review preserves B even if main has
+mandatory before `awp pr` can publish. Review preserves B even if main has
 advanced. Resuming a reviewer is still an independent pass against that exact state.
 
-Initial installation and `task pr` recovery use one required installation guard.
+Initial installation and `awp pr` recovery use one required installation guard.
 It pins the proven integration record separately from evolving commit/result
 bookkeeping and rechecks the live task identity, recorded scope, proven source,
 frozen base SHA, tree/history, and durable provenance immediately before file checkout,
@@ -1923,11 +1924,11 @@ remote identity, without polling remote refs or requiring an idle permanent
 checkout. The base object B remains immutable in the proof; a moving main ref
 is not part of the installation identity.
 
-`task integrate` owns local installation safety; `task pr` owns remote publication
+`awp integrate` owns local installation safety; `awp pr` owns remote publication
 eligibility. Remote observations establish eligibility before the proof is frozen.
 After that, local installation and its recovery may complete against B even if
 remote/permanent main advances or a remote task branch appears. Installation never
-authorizes publication or overwrites a remote ref. `task pr` can recover a pending
+authorizes publication or overwrites a remote ref. `awp pr` can recover a pending
 local plan without remote Git/PR lookups or GitHub credentials and then stops for
 review.
 After review, it checks current remote refs/history: newer main requires the
@@ -1950,9 +1951,9 @@ For an unrecoverable uncertain Codex attempt with no recorded provider session,
 an explicit human recovery action can abandon that exact context:
 
 ```sh
-task contexts DEV-30 --all
-task integrate DEV-30 --abandon DEV-30-G1
-task integrate DEV-30
+awp contexts TEAM-123 --all
+awp integrate TEAM-123 --abandon TEAM-123-G1
+awp integrate TEAM-123
 ```
 
 `--abandon` launches nothing and does not install or infer a result. It only
@@ -1994,14 +1995,14 @@ used to resume integration. G2 still requires a separate explicit command.
 
 Under the task lock, the controller durably records the explicit abandonment and
 an archive in private Git metadata before retiring G1 with its identity fields
-intact. `task contexts --all` retains it as `abandoned`. Its checkout, conflict
+intact. `awp contexts --all` retains it as `abandoned`. Its checkout, conflict
 index/files, output directory, original attempt evidence, and abandonment proof
 are kept; nothing is deleted and review/publication authorization is unchanged.
 If interrupted before archival/retirement finishes, normal commands still refuse;
 repeat the exact `--abandon` action explicitly to recheck absence and finish.
 Missing or conflicting provenance never authorizes a retry.
 
-Only a separate normal `task integrate` after completed abandonment may allocate
+Only a separate normal `awp integrate` after completed abandonment may allocate
 G2. It repeats current acceptance, source/base, remote/publication, and deterministic
 conflict checks, using a fresh checkout/context and leaving G1's evidence intact.
 Successful installation still revokes the old review and requires a fresh
@@ -2009,7 +2010,7 @@ independent review. The abandoned checkout is never a source of an installable
 result.
 
 Once both the integration proof and revoked-acceptance rebase journal are durable,
-a pending installation can continue through `task pr` using its existing proven
+a pending installation can continue through `awp pr` using its existing proven
 source/target recovery states and saved commit IDs. That invocation finishes
 installation and demands review; it cannot publish. A crash between proof storage
 and authorization revocation, or ambiguous partial file updates, requires manual
@@ -2021,7 +2022,7 @@ slice scope require inspection before installation can continue.
 There is no automatic cleanup or resume of integration checkouts or completion
 directories in v1, including after success. Explicit
 [forced local-execution disposal](#forced-local-execution-disposal) can remove a never-published
-execution and its retained artifacts. Otherwise inspect `task contexts DEV-20 --all`,
+execution and its retained artifacts. Otherwise inspect `awp contexts TEAM-123 --all`,
 the retained pane/checkout, completion output, and private provenance before manual
 reconciliation. Lost output is never permission to replay a prompt. Preserve
 valuable resolutions
@@ -2034,11 +2035,11 @@ remain manual recovery; force-push and merge-commit rewriting are not supported.
 After a task is completed and its branch is merged into the configured local base:
 
 ```sh
-task cleanup DEV-7
+awp cleanup TEAM-123
 ```
 
 Cleanup uses the same Linear project/repository mapping and Git/Herdr workspace
-resolver as `task start`. It requires Linear's `completed` state type, regardless
+resolver as `awp start`. It requires Linear's `completed` state type, regardless
 of the status display name. The issue identifier, registered branch, checkout,
 and recorded task scope must agree; the current title and filesystem naming are
 not used to locate the worktree. Exactly one local task branch and one matching
@@ -2125,7 +2126,7 @@ with cleanup.
 ### Forced local-execution disposal
 
 ```sh
-task cleanup DEV-30 --force
+awp cleanup TEAM-123 --force
 ```
 
 `--force` is destructive authorization to discard one selected,
@@ -2155,14 +2156,14 @@ exactly one candidate. A branch prefix, label or path alone never proves ownersh
 
 If no workspace is open, use `herdr worktree open --cwd <permanent-repo> --path
 <registered-checkout>`, quit its agents, and retry. For conflicting candidates,
-`task contexts ISSUE --all`, `git -C <permanent-repo> worktree list` and
+`awp contexts ISSUE --all`, `git -C <permanent-repo> worktree list` and
 `herdr worktree list --cwd <permanent-repo>` identify the conflicting contexts,
 branches, paths and workspace IDs. Select one proven merged execution using its
 exact local branch name:
 
 ```sh
-task cleanup DEV-7 --force --branch dev-7-api-slice
-task cleanup DEV-7 --force
+awp cleanup TEAM-123 --force --branch team-123-api-slice
+awp cleanup TEAM-123 --force
 ```
 
 The first command removes only that execution; the second can remove the remaining
@@ -2305,7 +2306,7 @@ external completion directories must match the recorded pass and contain only
 the completion output. Unrelated execution state is left intact.
 
 Before deletion, a bounded, atomically replaced and fsynced journal in the common
-Git directory (`agentic-workflows-cleanup/DEV-30.discard/<execution-id>.json`)
+Git directory (`agentic-workflows-cleanup/TEAM-123.discard/<execution-id>.json`)
 records the exact selectors and provenance. Each disposal claim has a unique
 execution ID and journal. Completed journals, including legacy `state.json`
 tombstones, remain unchanged when a later execution of the same issue is cleaned
@@ -2321,7 +2322,7 @@ Merged journals additionally retain the exact tip/base and PR merge proof (or
 ancestry proof), plus a digest of the original scope file or its absence. Every
 removal boundary revalidates this evidence, exact target identity, ownership,
 filesystem roots and stopped runtime. The proof survives worktree and branch
-removal, so `task cleanup ISSUE --force` can finish an interrupted workspace
+removal, so `awp cleanup ISSUE --force` can finish an interrupted workspace
 close, worktree removal, branch deletion or context retirement without creating
 scope metadata or repeating a confirmed deletion. An unrecognized Herdr close
 response is reconciled against the exact endpoint/workspace, terminal snapshot,
@@ -2332,7 +2333,7 @@ paths, new claims and runtime uncertainty stop further removal. Remote refs,
 GitHub PRs and Linear state are never changed.
 
 The journal retains an explicit branch selection through retries. Resume with the
-same command or `task cleanup ISSUE --force`; a different requested branch refuses
+same command or `awp cleanup ISSUE --force`; a different requested branch refuses
 until the pending disposal finishes. After a squash head's local branch is removed,
 retry uses its retained SHA to recheck the exact GitHub PR/head/merge proof and the
 merge result's reachability from the configured base. It does not require the

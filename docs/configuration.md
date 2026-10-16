@@ -5,7 +5,7 @@
 Installation, project mapping, issue structure, task readiness, implementation
 scope, agent selection, review validation, repository permission profiles, and
 GitHub API credentials and SSH-agent setup for the Agentic Workflows Prototype (AWP) `awp` CLI.
-The first public release is a **Developer Preview** for local, single-machine use.
+The intended first public release is a **Developer Preview** for local, single-machine use.
 
 ## Installation and project mapping
 
@@ -315,7 +315,7 @@ Both roles accept `kind`, `model`, and `mode`, matching the global schema;
 `reasoning` remains a legacy alias for `mode`, and both cannot occur in one table.
 `[loop] timeout` is also allowed globally. The default is 7200 seconds (two hours)
 per delivered pass. It is an advisory warning threshold: the controller keeps
-observing the original agent after warning. `task loop --timeout SECONDS` overrides
+observing the original agent after warning. `awp loop --timeout SECONDS` overrides
 it for a new loop. Standalone review/integration timeouts retain their command defaults.
 
 Fields resolve independently: **CLI → project local → project shared → global →
@@ -365,7 +365,7 @@ block_name = "Agent instructions"
 ```
 
 Both fields and the table are optional, with the defaults shown above.
-`task start` with an agent and from-scratch `task loop` share this policy:
+`awp start` with an agent and from-scratch `awp loop` share this policy:
 
 | Mode | Missing configured block |
 | --- | --- |
@@ -383,7 +383,7 @@ recognizes `+++ Implementation notes` rather than the default name.
 Unsupported modes, a non-table policy, unknown policy fields, and non-string,
 empty, multiline, or nonprintable block names are configuration errors, including
 in `ignore` mode. Surrounding spaces in configured names are trimmed.
-Workspace-only preparation (`task start --no-agent`) and cleanup skip these
+Workspace-only preparation (`awp start --no-agent`) and cleanup skip these
 execution settings, just as they skip agent selection.
 
 In every mode, the complete current description reaches the implementation agent
@@ -409,7 +409,7 @@ The value must be a TOML boolean. Non-table settings and unknown fields are
 configuration errors. Workspace-only preparation and cleanup skip this execution
 setting. No new configuration format or project-registry mapping is required.
 
-`task start` and loop-owned implementation use the same guidance and unchanged
+`awp start` and loop-owned implementation use the same guidance and unchanged
 complete issue description. The agent reads just enough repository context to
 assess the outcome, scope and constraints, verification, feasibility, and blocking
 ambiguity. It does not require a template, headings, explicit acceptance criteria,
@@ -428,7 +428,7 @@ preparation and the workflow-owned Linear status transition.
 
 For interactive start, answer a blocked assessment in the existing implementation
 conversation. For a loop, inspect the stopped result and clarify the task, then
-use `task loop ISSUE --new` to deliver current requirements to the same verified,
+use `awp loop ISSUE --new` to deliver current requirements to the same verified,
 idle implementation session. `--continue` remains for graceful pauses, and an
 uncertain delivery cannot be retried automatically. See the
 [readiness result contract](lifecycle.md#implementation-readiness-outcomes) and
@@ -446,7 +446,7 @@ policy = "strict" # strict | balanced
 Omitting the table or `policy` defaults to `strict`. Only `strict` and `balanced`
 are accepted, with surrounding whitespace trimmed. Unsupported values, non-table
 settings, and unknown fields are configuration errors. Workspace-only preparation
-(`task start --no-agent`) and cleanup skip this execution setting.
+(`awp start --no-agent`) and cleanup skip this execution setting.
 
 | Policy | Guidance |
 | --- | --- |
@@ -454,7 +454,7 @@ settings, and unknown fields are configuration errors. Workspace-only preparatio
 | `balanced` | Permit small, clearly relevant adjacent improvements when justified by the requested outcome. No unrelated feature work or broad cleanup. |
 
 Both modes allow necessary supporting changes, regression tests, documentation,
-and safety fixes for a complete, safe solution. `task start`, loop-owned
+and safety fixes for a complete, safe solution. `awp start`, loop-owned
 implementation (including completion and fixes), and independent review use the
 same resolved policy. Fresh review and same-reviewer re-review examine each
 substantive change against the complete issue and report unnecessary expansion
@@ -470,7 +470,7 @@ validation settings keep their existing behavior.
 
 ## Agent and reviewer selection
 
-`kind` may be `codex` (the default implementation) or `pi`. For `task start`,
+`kind` may be `codex` (the default implementation) or `pi`. For `awp start`,
 `model` and `mode` are optional; when omitted, the selected agent's own local
 default is used. The legacy `reasoning = "high"` field remains accepted as an alias
 for `mode` so
@@ -495,8 +495,8 @@ thinking choice in workflow `mode`/`--mode` so it follows one validated path.
 Per-command choices override the configuration layers without modifying them:
 
 ```sh
-task start DEV-7 --agent pi
-task start DEV-7 --agent codex --model gpt-6-astra --mode high
+awp start TEAM-123 --agent pi
+awp start TEAM-123 --agent codex --model gpt-6-astra --mode high
 ```
 
 `--agent`, `--model`, and `--mode` resolve independently. For example,
@@ -518,16 +518,16 @@ Fresh review requires an explicit model and mode in the resolved `[reviewer]` la
 Resuming a review retains its saved agent/model/mode and rejects selection flags.
 See [review lifecycle](lifecycle.md#task-review) for exact resume requirements.
 
-Configured loop use needs only `task loop DEV-7`. It resolves initial implementation
+Configured loop use needs only `awp loop TEAM-123`. It resolves initial implementation
 from `[agent]` and fresh review from `[reviewer]`, requiring explicit model and mode
 for both roles. Optional `--i-agent`, `--i-model`, and `--i-mode` override implementation;
 `--r-agent`, `--r-model`, and `--r-mode` override review. Each override resolves
 independently over its role's configuration. Established implementation contexts
 keep their recorded settings and reject `--i-*`. Generic `--agent`, `--model`, and
-`--mode` remain available on `task start` and `task review`, but are not accepted by
-`task loop`. See [loop lifecycle](lifecycle.md#task-loop) for startup and controls.
+`--mode` remain available on `awp start` and `awp review`, but are not accepted by
+`awp loop`. See [loop lifecycle](lifecycle.md#task-loop) for startup and controls.
 
-`task integrate DEV-7` also resolves its single execution role from `[agent]`.
+`awp integrate TEAM-123` also resolves its single execution role from `[agent]`.
 Optional `--agent`, `--model`, and `--mode` override those fields independently;
 model and mode must both be explicit before integration mutation or launch.
 It always creates a fresh integration context; it does not inherit or change the
@@ -632,7 +632,7 @@ security framework remain out of scope.
 ## GitHub publishing
 
 The workflow's GitHub REST client needs repository access and **Pull requests:
-read** for private PR-history checks. `task pr` also needs **Pull requests: write**
+read** for private PR-history checks. `awp pr` also needs **Pull requests: write**
 to create/update PRs. Git transport separately uses your SSH key or HTTPS
 credential helper; a working SSH key does not authenticate API requests.
 
@@ -692,19 +692,19 @@ inside the subshell for the intended controller command, with tracing disabled:
     set +vx
     unset GH_TOKEN GITHUB_TOKEN
     . "$HOME/.agentic-workflows-lite/secrets.env"
-    task start DEV-7
+    awp start TEAM-123
 )
 ```
 
-Use the same subshell pattern for `task start DEV-7 --no-agent`, `task review`,
-`task loop`, cleanup, or `task pr` when they need private API access. The parent
+Use the same subshell pattern for `awp start TEAM-123 --no-agent`, `awp review`,
+`awp loop`, cleanup, or `awp pr` when they need private API access. The parent
 shell retains its previous environment. Only source files you own and trust:
 sourcing executes shell code. Keep mode `600` after editor saves, and keep backups
 private. Do not source the file from shell startup files or dump the environment
 for diagnosis. The workflow does not load `secrets.env` itself.
 
 For a fine-grained token, select only the required repositories and grant **Pull
-requests: Read-only**, or **Read and write** if using `task pr`. Keep automatic
+requests: Read-only**, or **Read and write** if using `awp pr`. Keep automatic
 Metadata read access. The API token does not need **Contents: write**: publishing
 uses separate Git transport and does not merge PRs through the API. See
 [GitHub pull request endpoints](https://docs.github.com/en/rest/pulls/pulls).
@@ -769,7 +769,7 @@ remote groups. Cross-repository/fork publication is not supported. Existing Git
 hooks, commit signing, credential helpers, SSH configuration, and terminal
 environment (including
 `GPG_TTY` when required by the user's signing setup) remain under user control.
-Run from your normal terminal for interactive passphrases. `task pr` does not
+Run from your normal terminal for interactive passphrases. `awp pr` does not
 choose an execution agent or need agent CLI authentication; its public prose was
 already generated during the accepted independent review.
 

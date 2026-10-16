@@ -81,10 +81,10 @@ libraries, uses `sudo`, changes AppArmor, or edits third-party agent settings.
 Run the controller on the host, outside the coding agent's sandbox:
 
 ```sh
-awp start DEV-7 --browser
-awp loop DEV-7 --browser
-awp review DEV-7 --browser
-awp review DEV-7 --resume DEV-7-R1
+awp start TEAM-123 --browser
+awp loop TEAM-123 --browser
+awp review TEAM-123 --browser
+awp review TEAM-123 --resume TEAM-123-R1
 ```
 
 These are alternative lifecycle entry points, not a sequence to run together.
@@ -96,13 +96,13 @@ Browser opt-in is per task execution, never a project-wide configuration default
 Project agent/model/profile defaults still use the [existing configuration](configuration.md).
 
 Before each browser-dependent handoff, AWP uses the allocated context ID as both
-actor ID and instance ID: for example `DEV-7-I1`, `DEV-7-R1`, and `DEV-7-R2`.
+actor ID and instance ID: for example `TEAM-123-I1`, `TEAM-123-R1`, and `TEAM-123-R2`.
 The controller prepares or reuses that exact session on the host and verifies a
 snapshot. It then supplies the absolute helper path, exact identity, private
 runtime directory, and a complete `env ... --connect-only` command prefix in the
 handoff. Use that prefix on **every** call. Fresh and resumed reviewer handoffs
 use the same persisted reviewer ID, including after pane recreation. A default
-session or a session called `dev7-review` cannot stand in for `DEV-7-R2`.
+session or a session called `team123-review` cannot stand in for `TEAM-123-R2`.
 
 Opt-in is retained on each actor and in the loop checkpoint. Each actor's runtime
 directory is also retained, so changed controller environment variables cannot

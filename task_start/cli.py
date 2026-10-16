@@ -31,7 +31,7 @@ from .dashboard_server import serve_dashboard, trusted_https_origin
 def issue_identifier(value: str) -> str:
     value = value.upper()
     if not re.fullmatch(r"[A-Z][A-Z0-9]*-[1-9][0-9]*", value):
-        raise argparse.ArgumentTypeError("expected an issue identifier such as DEV-7")
+        raise argparse.ArgumentTypeError("expected an issue identifier such as TEAM-123")
     return value
 
 

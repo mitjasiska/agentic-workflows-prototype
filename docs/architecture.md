@@ -3,7 +3,7 @@
 [Project overview](../README.md) · [Lifecycle reference](lifecycle.md) · [Agent instructions](../AGENTS.md)
 
 Agentic Workflows Prototype (AWP) is a local, single-machine Python development
-controller. Its first public release is a **Developer Preview**.
+controller. Its intended first public release is a **Developer Preview**.
 
 - [Execution contract and responsibilities](#agent-execution-architecture)
 - [Handoff transport](#handoff-transport)

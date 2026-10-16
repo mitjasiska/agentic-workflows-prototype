@@ -1,27 +1,18 @@
 # Agentic Workflows Prototype (AWP)
 
-Agentic Workflows Prototype (AWP) is a focused Python development controller for local,
-single-machine workflows. Its first public release is a **Developer Preview**.
-It takes a development task from a Linear issue to an agent implementation,
-independent review, PR publication, and workspace cleanup, combining a task-creation
-skill with the `awp` command that coordinates your repositories, Git worktrees, and
-interactive coding agents in Herdr.
+**From a development task to independently reviewed code.**
 
-You choose the task and scope, the workflow prepares the checkout and hands over
-the current requirements, and you choose manual review or a bounded automatic
-fix/review loop. You retain decisions about scope and publication.
-Codex and Pi are supported execution agents; Codex is the default
-implementation.
+Agentic Workflows Prototype (AWP) is an open-source Python **agent orchestration framework** for AI-assisted software development. It coordinates coding agents through a structured workflow—from Linear issue intake and isolated workspaces to implementation, independent code review, automated fixes, and GitHub pull-request publication. Developers retain control over decisions, approvals, and merging.
 
-Python AWP uses the `agentic-workflows-prototype` repository and `awp` command.
-The distribution name `agentic-workflows-lite`, Python modules, `./task`, and
-private `~/.agentic-workflows-lite/` state remain unchanged. `awl` is reserved for
-the future .NET Agentic Workflows Lite implementation; Python provides no alias.
-Existing installations must follow the [operator migration runbook](docs/migration.md)
-before moving a checkout or reusing the old repository name. The canonical URLs
-below require the operator's GitHub rename to have completed.
+AWP is a working prototype exploring the foundations of an **agentic software factory**. It supports real development workflows but remains experimental, with Linux as its initial execution platform.
+
+The next-generation project, **[Agentic Workflows Lite (AWL)](https://github.com/mitjasiska/agentic-workflows-lite)**, will be a separate C#/.NET implementation designed to become the primary product. Rather than porting AWP's architecture directly, AWL will build on its practical lessons with a new design.
+
+AWP will remain available as a development tool, behavioral reference, and bootstrap environment for AWL. Future Python development will focus primarily on compatibility, essential bug fixes, and maintenance.
 
 ## Core concepts
+
+Examples use the illustrative Linear issue ID `TEAM-123`; substitute your actual ID.
 
 | Concept | What it means for you |
 | --- | --- |
@@ -29,7 +20,7 @@ below require the operator's GitHub rename to have completed.
 | Project repository | A Linear project maps to a permanent local Git checkout and a base branch. Keep that checkout clean and on its configured base. |
 | Task workspace | A separate Git worktree and branch, opened in Herdr. Implementation and review share this checkout. |
 | Slice | An explicitly named part of an issue, with its own branch and workspace. The default is one issue, one branch, one PR. |
-| Context | An implementation or reviewer conversation, labeled in its pane, such as `DEV-7-I1` or `DEV-7-R1`. Several contexts can share a checkout. |
+| Context | An implementation or reviewer conversation, labeled in its pane, such as `TEAM-123-I1` or `TEAM-123-R1`. Several contexts can share a checkout. |
 | Review pass | A review of the current checkout against the local base. A fresh pass starts an independent conversation; an explicit resume keeps a particular reviewer's history. |
 
 The normal path is: prepare an issue, start implementation, review the result,
@@ -46,11 +37,22 @@ for inspecting selected settings, observed durations, and outcomes.
 
 V1 supports **Linux only**; Windows and macOS are unsupported. You need Python
 3.12 or newer, Git, and Herdr on `PATH`, with a running Herdr session. Agent
-execution needs an authenticated Codex or Pi CLI on `PATH`. Install
+execution needs an authenticated Codex or Pi CLI on `PATH`; Codex is the default
+implementation agent. Install
 [uv](https://docs.astral.sh/uv/getting-started/installation/) for the user-scoped
 tool commands below. AWP's Python runtime has no third-party dependencies.
 
 ### Install, upgrade, or uninstall
+
+Python AWP uses the `agentic-workflows-prototype` repository and `awp` command.
+The historical distribution name `agentic-workflows-lite`, Python modules,
+`./task`, and private `~/.agentic-workflows-lite/` state remain unchanged.
+`awl` is reserved for the future .NET AWL implementation; Python provides no alias.
+Existing installations must follow the [operator migration runbook](docs/migration.md)
+before moving a checkout or reusing the old repository name. Git-source installation
+below requires the operator's GitHub rename to have completed.
+A **Developer Preview** is the intended first public release, not a claim that
+a formal release has shipped.
 
 Install directly from Git; no retained AWP source clone is needed:
 
@@ -129,7 +131,7 @@ to that mode requires configuring that file explicitly; nothing is silently copi
 5. From any directory, start an existing Linear issue:
 
    ```sh
-   awp start DEV-7
+   awp start TEAM-123
    ```
 
 Both installation modes use the same `~/.agentic-workflows-lite/config.toml` for
@@ -196,9 +198,7 @@ and acceptance requirements. The standalone installation above remains independe
 ### Start, reopen, or prepare a workspace
 
 ```sh
-awp start DEV-7
-awp start DEV-7 --no-agent
-awp start DEV-7 --agent pi --model <provider/model> --mode high
+awp start TEAM-123
 ```
 
 `start` updates the clean permanent base, creates or focuses the task workspace,
@@ -223,19 +223,15 @@ diff-size or file-count limits. See [scope configuration](docs/configuration.md#
 
 Use `--no-agent` to prepare or focus the workspace without launching an agent.
 It still updates Linear and works without an agent installation or `[agent]`
-configuration. It cannot be combined with agent selection flags. If an agent is
-already running, continue in its pane, use `--no-agent` to focus the workspace,
+configuration. For option combinations, see the [CLI reference](#cli-reference).
+If an agent is already running, continue in its pane, use `--no-agent` to focus the workspace,
 or exit that session before requesting a fresh implementation handoff.
-
-`--agent`, `--model`, and `--mode` override configuration independently for one
-command. Changing only `--agent` retains the configured model and mode, so choose
-values supported by that agent. There is no automatic fallback agent.
 
 For separate implementation slices, select a stable scope name:
 
 ```sh
-awp start DEV-7 --slice importer
-awp start DEV-7 --slice exporter
+awp start TEAM-123 --slice importer
+awp start TEAM-123 --slice exporter
 ```
 
 Each slice has its own branch and workspace. Without `--slice`, start can reuse
@@ -252,9 +248,8 @@ When implementation and validation are ready, leave the task workspace open and
 run an independent review:
 
 ```sh
-awp review DEV-7
-awp review DEV-7 --agent codex --model gpt-6-astra --mode high
-awp review DEV-7 --resume DEV-7-R1
+awp review TEAM-123
+awp review TEAM-123 --resume TEAM-123-R1
 ```
 
 Fresh review opens a new reviewer pane in the task tab. It examines committed,
@@ -280,14 +275,13 @@ candidate; it is not required for every ordinary merge. See the canonical
 
 After addressing findings yourself or in the implementation session, choose a
 fresh review for a new independent assessment, or `--resume` with an exact review
-context ID for a follow-up in that reviewer's conversation. Resume retains the
-original agent/model/mode and cannot be combined with selection flags. It stops
-if the recorded conversation cannot be verified.
+context ID for a follow-up in that reviewer's conversation. It stops if the
+recorded conversation cannot be verified; see the [CLI reference](#cli-reference)
+for selection and timeout options.
 
 Results are `clean`, `findings`, `blocked`, or `failed`; a blocked result can report
 that the implementation changed during review. Findings and limitations need
-human follow-up. Use `--json` for structured output or `--timeout SECONDS` to
-change the default 1800-second wait after delivery. See the
+human follow-up. See the
 [review reference](docs/lifecycle.md#task-review) for guarantees, exit codes, and
 resume requirements.
 
@@ -296,10 +290,7 @@ resume requirements.
 Start implementation and review of a Linear issue with one command:
 
 ```sh
-awp loop DEV-7
-awp loop DEV-7 --pause-after-current
-awp loop DEV-7 --status
-awp loop DEV-7 --continue
+awp loop TEAM-123
 ```
 
 With no implementation context, the loop performs the same default workspace
@@ -308,7 +299,7 @@ initial implementation with a structured completion contract. A validated result
 automatically starts fresh independent review. This startup supports unsliced
 workspaces only.
 
-If Linear remains unavailable before the first handoff, repeat `awp loop DEV-7`
+If Linear remains unavailable before the first handoff, repeat `awp loop TEAM-123`
 after it recovers. The loop can reuse its original reservation only after proving
 that no handoff was claimed and the requirements, checkout, and empty shell still
 match. Saved selections and bounds stay in effect. After Ctrl+C, controller loss,
@@ -317,7 +308,7 @@ and collect its verified retained result without sending another prompt. Missing
 or conflicting evidence stops for inspection. See
 [recovery](docs/lifecycle.md#checkpoint-and-interruption-recovery).
 
-If an implementation context already exists, plain `awp loop DEV-7` continues
+If an implementation context already exists, plain `awp loop TEAM-123` continues
 from its verified completion, or resumes that same conversation to finish work
 and collect structured completion. It can also adopt a completed standalone
 `awp review` with matching private evidence: findings go to the original
@@ -328,61 +319,30 @@ reviewer for focused follow-ups. Clean review finishes with one combined report.
 Product/design/scope decisions, uncertain results, repeated findings, and pass
 limits stop for human action.
 
-Configured use needs only `awp loop DEV-7`: `[agent]` supplies initial
-implementation settings and `[reviewer]` supplies review settings. Optional
-`--i-agent`, `--i-model`, and `--i-mode` override implementation; `--r-agent`,
-`--r-model`, and `--r-mode` override the fresh reviewer. Both roles require explicit
-resolved model and mode. Existing implementation contexts retain their recorded
-settings and reject `--i-*` overrides, except identical selections during startup
-recovery. Generic `--agent`, `--model`, and `--mode`
-remain available on `awp start` and `awp review`; `awp loop` uses only the
-role-prefixed overrides.
+Configured use needs only `awp loop TEAM-123`: `[agent]` supplies initial
+implementation settings and `[reviewer]` supplies review settings. Both roles
+require explicit resolved model and mode. Existing implementation contexts retain
+their recorded settings and reject implementation overrides, except identical
+selections during startup recovery.
 
-Run `--pause-after-current` from another terminal while the command is working.
-The current pass finishes; the next handoff waits for explicit `--continue`.
-`--status` only inspects, including whether the pass warning threshold is exceeded.
-Ctrl+C stops the waiting controller, not necessarily the agent turn; ordinary
-`awp loop DEV-7` reconciles it, while `--continue` remains exclusive to pauses.
-
-After fixing an external prerequisite for a completed blocked review, run
-`awp loop DEV-7 --retry-review`. It sends saved implementation findings for fixes
-and independent re-review, or retries reviewer validation directly when there
-are no findings. Saved validation limitations remain outstanding until passing
-review evidence is recorded. Human-decision findings require inspection.
-See [blocked review continuation](docs/lifecycle.md#blocked-review-continuation).
-
-If the loop stopped solely at its pass/review limit, inspect its pending boundary
-and explicitly increase the totals, for example
-`awp loop DEV-7 --extend --max-passes 10 --max-reviews 5` after a six-pass/three-review
-stop. This preserves I1/R1, counted passes and unresolved findings, subject to
-checkout and session verification. `--new --from-review` creates a fresh reviewer
-without prior findings and is refused when it would skip exhausted pending fixes.
-See [budget extension](docs/lifecycle.md#budget-exhaustion-continuation).
-
-To deliberately abandon an interrupted pass, stop the waiting controller with
-Ctrl+C, quit task agents to their original shells while keeping panes open, then
-run `awp loop DEV-7 --abort` from outside the checkout. On Linux V1 it verifies
-stopped registered executions and preserves implementation files and session
-history. Stop manually detached helpers before reuse; abort does not prove
-machine-wide checkout non-use. See the [abort sequence](docs/lifecycle.md#explicit-abort-without-discarding-work) for
-fresh review and incomplete-implementation continuation.
-Defaults are three reviews, six total passes, and a two-hour (7200-second)
-warning threshold per delivered pass. Use `--max-reviews`, `--max-passes`, and
-`--timeout` when starting the loop; `[loop] timeout` also configures the threshold.
-At the threshold the controller warns once and keeps observing the original agent.
-You can leave it working or use the controls above; verified late results still
-proceed to review. This wall-clock threshold is not a token budget.
-The initial implementation counts as one pass; review counts begin when review runs.
-Use `--json` for the combined structured report. See the
-[loop reference](docs/lifecycle.md#task-loop) for checkpoints, bounds, and recovery.
+The [CLI reference](#cli-reference) lists role selectors, bounds, and controls for
+pausing, continuing, retrying a blocked review, extending an exhausted run, or
+abandoning a stopped execution. Ctrl+C stops the waiting controller, not necessarily
+the agent turn; ordinary `awp loop TEAM-123` reconciles the original pass.
+See the [loop reference](docs/lifecycle.md#task-loop) for checkpoints and recovery,
+[blocked review continuation](docs/lifecycle.md#blocked-review-continuation) for
+retained findings and validation limitations,
+[budget extension](docs/lifecycle.md#budget-exhaustion-continuation) for preserving
+conversations and pending fixes, and the
+[abort sequence](docs/lifecycle.md#explicit-abort-without-discarding-work) before
+abandoning an interrupted pass. Stop manually detached helpers before reuse;
+abort verifies registered executions, not machine-wide checkout non-use.
 
 ### Inspect local task status
 
 ```sh
-awp status DEV-7
-awp status DEV-7 --json
+awp status TEAM-123
 awp status --all
-awp status --all --json
 ```
 
 Status combines saved loop, review, integration, publication, and cleanup evidence
@@ -397,36 +357,31 @@ To keep that view open with automatic updates:
 
 ```sh
 awp dashboard
-awp dashboard --port 8766
 ```
 
 Open the printed localhost URL, choose a configured Linear project, then inspect
 a task's current phase, progress, and attention guidance. Expand contexts,
 workspace details, and history when needed. Use **Task report** to inspect and
 copy the full saved loop report, or available diagnostics. The dashboard is
-read-only, requires no frontend build or Node runtime, and stops with Ctrl+C. Use `--port 0`
-to select a free port. Optional private Tailscale Serve access uses
-`--trusted-origin https://<device>.<tailnet>.ts.net`. See
+read-only, requires no frontend build or Node runtime, and stops with Ctrl+C.
+For optional private Tailscale Serve access, see
 [dashboard access and background setup](docs/lifecycle.md#task-dashboard) for
 stale-data behavior, SSH forwarding, and setup-once Tailscale/systemd instructions.
 
 ### Find your conversations
 
 ```sh
-awp contexts
-awp contexts DEV-7
-awp contexts DEV-7 --all
+awp contexts TEAM-123
 ```
 
 This read-only view shows context IDs, locations, selected agents, status, and
-whether a conversation can be resumed. `--all` includes retired history. It does
-not contact Linear or load workflow configuration. An `unknown` or stale entry
-needs inspection; listing it does not repair or resume it.
+whether a conversation can be resumed. It does not contact Linear or load workflow
+configuration. An `unknown` or stale entry needs inspection; listing it does not repair or resume it.
 
 ### Publish the reviewed result
 
 ```sh
-awp pr DEV-7
+awp pr TEAM-123
 ```
 
 This command authorizes committing the exact clean-reviewed task state, pushing
@@ -441,29 +396,28 @@ review, rerun `pr` to publish the same rebased commit with that metadata.
 Already published branches are never automatically rebased.
 
 For a conflict while the reviewed implementation is still uncommitted, run
-`awp integrate DEV-7`. It uses `[agent]` (optionally overridden with `--agent`,
-`--model`, and `--mode`) and requires an explicit resolved model and mode. The
-agent resolves and validates in a retained isolated checkout. A proven result is
-installed locally against its frozen base and requires a fresh `awp review DEV-7`.
+`awp integrate TEAM-123`. It uses `[agent]` and requires an explicit resolved model
+and mode. The agent resolves and validates in a retained isolated checkout. A proven result is
+installed locally against its frozen base and requires a fresh `awp review TEAM-123`.
 Local installation can finish if main advances; `awp pr` separately checks whether
 the reviewed result is still eligible for publication. Later main advancement does
 not make an already confirmed push uncertain.
 Human decisions or uncertain execution stop for inspection without installation.
 For a stopped uncertain Codex attempt with no recorded session or task result, explicit
-`awp integrate DEV-7 --abandon DEV-7-G1` can retain its evidence and permit a
+`awp integrate TEAM-123 --abandon TEAM-123-G1` can retain its evidence and permit a
 separate fresh attempt after strict process/session absence checks.
 See [isolated integration recovery](docs/lifecycle.md#task-integrate) for supported
 states and interruption handling.
 
 For feedback on a published PR, leave the additional edits uncommitted, run a
-new `awp review DEV-7`, then `awp pr DEV-7`. Each cycle appends one reviewed
+new `awp review TEAM-123`, then `awp pr TEAM-123`. Each cycle appends one reviewed
 commit and updates the same PR. Finish any interrupted publication with `pr`
 before starting another review. Follow-ups currently require the original
 reviewed base to remain unchanged; base advancement stops for manual inspection.
 See [follow-up publication](docs/lifecycle.md#follow-up-publication) for the
 lineage and recovery guarantees.
 
-The commit subject and PR title use `<type>: <summary> (DEV-7)`. The type comes
+The commit subject and PR title use `<type>: <summary> (TEAM-123)`. The type comes
 from one canonical Linear category label; the reviewer supplies a public-safe
 summary of the actual implemented result and observed validation. Titles use a
 concise lower-case action summary, preserving names and acronyms, for example
@@ -484,7 +438,7 @@ ensure the merge is present in the configured local base. Exit the task's
 agent/shell sessions and run cleanup from outside its workspace:
 
 ```sh
-awp cleanup DEV-7
+awp cleanup TEAM-123
 ```
 
 Cleanup verifies completion and merge evidence, then removes the local task
@@ -495,7 +449,7 @@ merges are supported when their evidence matches the local task and base. See
 [cleanup requirements and retries](docs/lifecycle.md#task-cleanup).
 
 To discard an unpublished or proven merged local execution without changing its Linear status,
-stop its controller, then run `awp cleanup DEV-7 --force` from outside the task
+stop its controller, then run `awp cleanup TEAM-123 --force` from outside the task
 workspace. `--force` is explicit authorization to delete dirty task contents and
 retained integration checkouts/output, close the proven task workspace, and retire
 contexts while preserving bounded provenance and context history. It may stop the
@@ -506,7 +460,7 @@ or uncertain identity cause refusal. Merged recovery also supports a manually
 registered worktree without scope metadata when exact Git/Herdr identity and merge
 evidence agree on one local execution. Abandoned integrations still own
 their retained artifacts. If multiple local executions remain, select a proven
-merged one with `awp cleanup DEV-7 --force --branch <exact-local-branch>`.
+merged one with `awp cleanup TEAM-123 --force --branch <exact-local-branch>`.
 V1 protects workflow ownership; stop unmanaged processes
 using the files yourself. Ordinary cleanup without `--force` still requires a
 completed, merged task. See
@@ -522,15 +476,73 @@ or modify a workspace during review, publication, or cleanup. The
 [failure and retry reference](docs/lifecycle.md#failure-and-retry-behavior)
 explains which portions may already have completed.
 
+## CLI reference
+
+`ISSUE` is required unless shown as `[ISSUE]`; `dashboard` takes no issue.
+Use `awp --help` or `awp <command> --help`; `-h` is also available at both levels.
+Options below apply only to the commands listed.
+
+| Command | Purpose and command-specific options |
+| --- | --- |
+| `awp start ISSUE` | Create or reopen an implementation workspace. `--slice NAME`: select a stable implementation slice. `--no-agent`: prepare/focus without launching an agent. `--agent KIND`, `--model MODEL`, `--mode MODE`: override implementation selection. `--browser`: prepare an isolated host browser before handoff. |
+| `awp review ISSUE` | Run independent review. `--resume REVIEW_CONTEXT_ID`: return to that exact reviewer. `--agent KIND`, `--model MODEL`, `--mode MODE`: select a fresh reviewer. `--timeout SECONDS`: bound the completion wait (default 1800 after delivery). `--json`: structured review result. `--browser`: prepare the review actor's browser. |
+| `awp loop ISSUE` | Run bounded implementation, review, and fixes. `--i-agent KIND`, `--i-model MODEL`, `--i-mode MODE`: initial implementation selection; `--r-agent KIND`, `--r-model MODEL`, `--r-mode MODE`: fresh reviewer selection. `--browser`: prepare isolated browsers for task actors. `--from-review`: explicitly enter review of completed implementation, adopting exact standalone review evidence when available. `--max-passes N`: total pass limit (default 6, range 1–40); `--max-reviews N`: review limit (default 3, range 1–20). `--timeout SECONDS`: advisory warning per pass (configured `[loop] timeout` or 7200, range 1–86400). `--json`: combined lifecycle result. Controls are listed below. |
+| `awp status [ISSUE]` | Read local task state and bounded history. Supply either `ISSUE` or `--all` (required when omitting `ISSUE`): list registered workspaces by configured project. `--json`: canonical status projection. |
+| `awp contexts [ISSUE]` | Inspect local conversations, optionally filtered by issue. `--all`: include retired contexts. |
+| `awp dashboard` | Serve the read-only dashboard on `127.0.0.1`. `--port PORT`: local port (default 8765; 0 chooses a free port). `--trusted-origin HTTPS_ORIGIN`: allow one exact HTTPS origin through a local proxy. |
+| `awp pr ISSUE` | Commit and publish the exact clean-reviewed task as a GitHub PR; stop for human inspection and manual merge. No additional command-specific options. |
+| `awp integrate ISSUE` | Resolve unpublished integration conflicts in an isolated checkout, then require fresh review. `--agent KIND`, `--model MODEL`, `--mode MODE`: override integration selection. `--timeout SECONDS`: bound the completion wait (default 1800 after delivery). `--abandon CONTEXT`: abandon a stopped uncertain sessionless Codex integration context, retain evidence, and launch nothing; cannot accompany selection or timeout flags. |
+| `awp cleanup ISSUE` | Remove a completed, proven merged local task. `--force`: authorize destructive disposal of one unpublished or proven merged execution, including dirty files and retained artifacts, without changing Linear status. `--branch BRANCH`: select an exact proven merged local execution; requires `--force`. Run outside the task checkouts after stopping active work. |
+
+### Selection and timeout behavior
+
+`--agent` selects `codex` or `pi`; `--model` selects the model; `--mode` selects
+reasoning/thinking effort. Each overrides configuration independently: changing
+only the agent retains the configured model and mode, with no fallback agent.
+Start and integrate use `[agent]`; fresh review uses `[reviewer]`. Review,
+integrate, and both loop roles require explicit resolved model and mode.
+`loop` accepts only separate `--i-*`/`--r-*` selectors, not general
+`--agent`/`--model`/`--mode` flags; established contexts keep their saved selection.
+
+`start --no-agent` cannot accompany selection flags or `--browser`.
+`review --resume` retains the recorded reviewer agent/model/mode and rejects
+selection flags. For example: `awp review TEAM-123 --resume TEAM-123-R1`.
+
+Loop timeout is advisory: it warns and keeps observing the original agent,
+including late results. It is not a token budget. Review and integrate timeouts
+bound the completion wait; they leave evidence for inspection and do not prove
+that the agent stopped. Initial implementation counts as one loop pass; review
+counting begins when review runs.
+
+### Loop controls
+
+Use one control at a time with `awp loop ISSUE` (optionally `--json`).
+
+| Control | Meaning |
+| --- | --- |
+| `--pause-after-current` | Request a sticky pause before the next handoff; run from another terminal while the current pass finishes. |
+| `--continue` | Resume the exact saved pause, not arbitrary failures or interrupted agent turns. |
+| `--retry-review` | After resolving external blockers, continue a completed blocked review using its saved findings and checks; passing review evidence is still required. |
+| `--extend` | Increase exhausted saved totals with `--max-passes` and/or `--max-reviews`, preserving conversations, counted passes, and unresolved findings. |
+| `--status` | Inspect the checkpoint and warning threshold without resuming or contacting Linear. |
+| `--new` | Explicitly replace an eligible stopped checkpoint with a new bounded run and fresh reviewer. It is not a retry shortcut: unresolved execution must be reconciled or aborted first; use `--extend` to preserve exhausted pending fixes (`--new --from-review` refuses to skip them), and `--retry-review` for blocked reviews. |
+| `--abort` | Abandon an unfinished pass only after verified stopped execution on the Linux host. Stop the controller, quit task agents to their original shells, keep panes open, stop child/background jobs, and run outside the checkout. Preserves task files and session history; Ctrl+C alone does not abort. |
+
+Pause, continue, retry, status, and abort reject selection, timeout, limit, and
+browser flags. `--extend` accepts increased limits only. `--new` can select new bounds
+and a fresh reviewer; `--from-review` can accompany `--new`, but not the other
+controls. See [lifecycle details](docs/lifecycle.md#task-loop) for replacement
+eligibility and recovery, and [configuration](docs/configuration.md#agent-and-reviewer-selection)
+for selection precedence and supported modes.
+
 ## Project documentation
 
 - [Configuration](docs/configuration.md): installation, project mapping, agent/reviewer settings, and permissions.
 - [Task lifecycle reference](docs/lifecycle.md): workspace safety, review guarantees, cleanup, and retry cases.
 - [Architecture and validation](docs/architecture.md): execution adapters, prompt delivery, context registry, tests, and recorded live-check limits.
+- [Successor project](https://github.com/mitjasiska/agentic-workflows-lite): the separate future C#/.NET Agentic Workflows Lite (AWL).
 - [AWP migration](docs/migration.md): inventory, operator approval gates, installation replacement, and recovery.
 - [Repository instructions for agents](AGENTS.md): maintenance guidance and documentation ownership.
-
-Use `awp --help` or `awp <command> --help` for the available flags.
 
 ## License
 
