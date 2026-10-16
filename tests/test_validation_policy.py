@@ -56,6 +56,10 @@ class ValidationPolicyTests(unittest.TestCase):
                              'do not reduce coverage', 'arbitrary test-count targets or caps',
                              'test-first / red-green-refactor when useful; TDD is optional',
                              'new or changed tests', 'syntax/lint/diff checks',
+                             'directly affected components', 'real shared-contract/integration boundaries',
+                             'Tie extra neighboring or adversarial checks to a concrete risk',
+                             'do not run tangential integration suites just to accumulate validation',
+                             'broaden or repeat execution only for changed code, new failures, unresolved risks, or explicit requirements',
                              'Do not routinely run the full suite merely to end the implementation pass',
                              'Explicit Linear issue and repository validation requirements remain authoritative',
                              'Complete checks explicitly required locally or for this pass',
@@ -64,12 +68,34 @@ class ValidationPolicyTests(unittest.TestCase):
                              'fix the complete batch and rerun relevant tests',
                              'Never report an unrun check as passed', 'source and applicable revision'):
                     self.assertIn(text, instructions)
+                self.assert_baseline_triage(instructions)
+                self.assertIn('With failed checks, report blocked rather than completed', instructions)
+                self.assertIn('Baseline triage does not override the structured completion rules', instructions)
                 self.assertNotIn('complete required final validation before reporting ready', instructions)
+
+    def assert_baseline_triage(self, instructions):
+        instructions = ' '.join(instructions.split())
+        for text in ('compare the same exact command/test against the pinned unchanged base',
+                     'when safe and proportionate', 'disposable state outside the task checkout',
+                     'do not switch/reset the task checkout, create another branch/worktree',
+                     'Respect read-only constraints', 'Git metadata or other fixtures that an export lacks',
+                     'exact command/test, pinned base SHA, observed results on both versions',
+                     'relevant environment/fixture differences in checks details',
+                     'record the comparison as not_run with the reason',
+                     "failure's cause as unverified; do not guess",
+                     'not proof that current code is safe',
+                     'evidence-backed unrelated baseline failure from a regression',
+                     'do not edit unrelated implementation code or broaden task scope without authorization',
+                     'failed check stays failed in its historical record',
+                     'do not turn it into passed or not_run, or waive required passing evidence'):
+            self.assertIn(text, instructions)
 
     @staticmethod
     def requirements():
         return ('Cover retry failures and the configured limit.',
                 'All tests must pass. Full regression must pass before merge.',
+                'Ordinary human merges require independent approval and passing fast PR checks. '
+                'Full regression runs nightly and must pass on the exact final release candidate.',
                 'This agent must run the full suite locally before handoff.\n'
                 'Run the full suite on every review pass. Use strict red-green-refactor.')
 
@@ -97,16 +123,29 @@ class ValidationPolicyTests(unittest.TestCase):
                      'failure-path, and invariant coverage', 'do not discourage thorough test creation',
                      'complete batch of substantive actionable findings', 'Do not stop at the first defect',
                      'Run targeted tests, including adversarial checks',
+                     'real shared-contract/integration boundaries',
+                     'tie extra neighboring or adversarial probes to a concrete risk',
+                     'Independently rerun relevant tests, including suites the implementer already ran',
+                     'when independent confirmation is warranted',
+                     'Avoid routinely repeating long, overlapping batches without a distinct risk or evidence to check',
+                     'do not run tangential integration suites just to accumulate validation',
+                     'does not waive explicit requirements or exhaustive validation',
+                     'or limit independent investigation of suspected defects',
                      'Complete checks explicitly required locally or on this pass',
                      'external CI cannot replace those obligations', 'report blocked rather than clean',
                      'Merge-time requirements may be satisfied externally where permitted',
                      'remain pending until evidenced', 'Never assume CI exists',
                      'surface pending final validation to the human',
                      'tracked or untracked Git-visible task state', 'not_run', 'Never report an unrun check as passed',
+                     'Review is semantically read-only: do not edit task files',
+                     'Do not run unsafe tests and then restore their changes',
                      'source and applicable revision', 'clean independent code review is not CI approval',
                      'carry pending limitations into the summary and publication.validation',
                      'same reviewer rechecks fixes and regressions'):
             self.assertIn(text, instructions)
+        self.assert_baseline_triage(instructions)
+        self.assertIn('Failed checks still require independent passing evidence before clean review', instructions)
+        self.assertIn('baseline failure without an authorized in-scope correction requires blocked rather than clean', instructions)
         self.assertNotIn('When otherwise clean, run all final validation', instructions)
         encoded = prompt.split('LATEST LINEAR REQUIREMENTS (context data)\n')[1].split('\n\nEND OF LINEAR CONTEXT')[0]
         self.assertEqual(json.loads(encoded)['description'], requirement)
@@ -144,6 +183,49 @@ class ValidationPolicyTests(unittest.TestCase):
                     parse_implementation(json.dumps(implementation), 'pass', [])
                 with self.assertRaises(TaskError):
                     parse_verdict(json.dumps(review), 'pass')
+
+    def test_pinned_base_failure_example_preserves_failure_and_completion_guards(self):
+        # Synthetic DEV-104-shaped evidence, not a live execution or a repair of its integration test.
+        command = 'python3.12 -m unittest test_integration.Example.test_adoption'
+        base_sha = 'a' * 40
+        findings = [dict(id='F1'), dict(id='F2')]
+        resolutions = [dict(finding_id=f['id'], summary='Fixed dashboard history behavior') for f in findings]
+        focused = dict(name='Dashboard history tests', result='passed', details='Changed behavior: 12 tests passed')
+        failed = dict(name=command, result='failed',
+                      details='Task checkout: adoption assertion failed; Python 3.12, offline synthetic fixtures.')
+        pending = dict(name='Full offline regression', result='not_run',
+                       details='Nightly and exact final release-candidate gate pending; not an ordinary merge gate.')
+        for baseline_result, diagnosis in (
+                ('failed', 'Identical adoption assertion on pinned base; evidence-backed unrelated baseline failure.'),
+                ('passed', 'Pinned base passes; current failure is a suspected regression requiring investigation.'),
+                ('not_run', 'Pinned-base comparison impractical: required Git fixture unavailable; cause unverified.')):
+            with self.subTest(baseline_result=baseline_result):
+                comparison = dict(name=f'Pinned base: {command}', result=baseline_result,
+                                  details=f'SHA {base_sha}; disposable export outside task checkout; '
+                                          f'Python 3.12, offline synthetic fixtures. {diagnosis}')
+                checks = [focused, failed, comparison, pending]
+                summary = f'F1/F2 fixed; extra adoption check failed. {diagnosis} Completion remains blocked.'
+                implementation = dict(pass_id='pass', state='blocked', summary=summary,
+                                      checks=checks, resolutions=resolutions)
+                self.assertEqual(parse_implementation(json.dumps(implementation), 'pass', findings), implementation)
+                with self.assertRaises(TaskError):
+                    parse_implementation(json.dumps(dict(implementation, state='completed')), 'pass', findings)
+
+                # Re-review receives exact failure evidence alongside fix claims; prose cannot waive it.
+                feedback = dict(findings=findings, resolutions=resolutions, pending_checks=checks)
+                prompt = review_handoff(ISSUE, Path('/repo'), self.workspace(), 'main',
+                    SimpleNamespace(as_dict=lambda: dict(base_commit=base_sha)), 'DEV-7-R1', 'resumed',
+                    AgentOptions('codex', 'model', 'high'), 'pass', Path('/tmp/result.json'), loop_feedback=feedback)
+                self.assertIn(json.dumps(feedback), prompt)
+                self.assert_baseline_triage(prompt)
+                review = dict(pass_id='pass', state='blocked', summary=summary, findings=[], checks=checks)
+                self.assertEqual(parse_verdict(json.dumps(review), 'pass', required_checks=checks), review)
+                with self.assertRaises(TaskError):
+                    parse_verdict(json.dumps(dict(review, state='clean')), 'pass', required_checks=checks)
+                # Omitting the executed failure on a later pass cannot make baseline triage a clean result.
+                with self.assertRaises(TaskError):
+                    parse_verdict(json.dumps(dict(review, state='clean', checks=[focused])),
+                                  'pass', required_checks=[failed])
 
     def test_review_check_scope_is_explicit_and_legacy_checks_still_parse(self):
         check = dict(name='validation', result='not_run', details='Evidence unavailable')

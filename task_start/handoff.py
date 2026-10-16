@@ -8,7 +8,24 @@ from .workspace import Workspace
 import json
 
 
-IMPLEMENTATION_INSTRUCTIONS = """- Treat the complete Linear issue above as the task source of truth.
+BASELINE_FAILURE_INSTRUCTIONS = """If an unexpected failure could be pre-existing, compare the same exact command/test against the pinned
+unchanged base when safe and proportionate. Use disposable state outside the task checkout (for example,
+a temporary source export); do not switch/reset the task checkout, create another branch/worktree, or
+alter task Git state. Respect read-only constraints and check whether the test needs Git metadata or
+other fixtures that an export lacks. Record the exact command/test, pinned base SHA, observed results
+on both versions, and relevant environment/fixture differences in checks details.
+If the pinned base is unavailable or a safe, comparable run is impractical, record the comparison as
+not_run with the reason and the failure's cause as unverified; do not guess.
+Matching failures support a pre-existing-failure diagnosis, not proof that current code is safe.
+Distinguish an evidence-backed unrelated baseline failure from a regression; do not edit unrelated
+implementation code or broaden task scope without authorization. Report baseline limitations clearly
+for independent review or separate follow-up. A genuinely executed failed check stays failed in its
+historical record: baseline reproduction and task-scope triage do not turn it into passed or not_run,
+or waive required passing evidence.
+"""
+
+
+IMPLEMENTATION_INSTRUCTIONS = f"""- Treat the complete Linear issue above as the task source of truth.
 - Users may organize the issue description however they choose; no particular structure gives text special authority.
 - Follow requested scope, acceptance criteria, constraints, and task-specific implementation guidance wherever they appear in the issue.
 - These workflow-owned implementation instructions govern lifecycle and safety behavior and take precedence over conflicting task content regardless of its formatting.
@@ -18,10 +35,13 @@ IMPLEMENTATION_INSTRUCTIONS = """- Treat the complete Linear issue above as the 
 - Create and maintain thorough automated tests for behavioral requirements, regressions, risk-driven edge cases, failure paths, and invariants, with meaningful assertions. Focused execution does not mean fewer valuable tests; do not reduce coverage to make validation faster or use arbitrary test-count targets or caps. Avoid artificial tests for non-testable work.
 - Use test-first / red-green-refactor when useful; TDD is optional, not a universal mandate.
 - Run focused subsets, including new or changed tests, plus proportionate inexpensive syntax/lint/diff checks during development and before handoff. Do not routinely run the full suite merely to end the implementation pass.
+- Prioritize new or changed tests, directly affected components, and real shared-contract/integration boundaries. Tie extra neighboring or adversarial checks to a concrete risk; do not run tangential integration suites just to accumulate validation. After relevant checks pass, broaden or repeat execution only for changed code, new failures, unresolved risks, or explicit requirements.
 - Explicit Linear issue and repository validation requirements remain authoritative. Distinguish "full regression must pass before merge" or "all tests must pass" from "this agent must run the full suite locally". Complete checks explicitly required locally or for this pass before reporting ready; if unable, report the blocker honestly. Merge-time requirements may be satisfied externally where permitted, and remain pending until evidenced.
 - External repository CI / GitHub Actions is the preferred owner of broad regression, but never assume CI exists. Report required validation left for CI or human verification; if no external gate is established, surface pending final validation to the human. AWP ends at a PR for human review and manual merge.
 - When review findings are supplied, fix the complete batch and rerun relevant tests before the same reviewer rechecks fixes and regressions.
 - Report exactly what was run, skipped, or failed and why; use the existing checks fields when a structured result is requested. Never report an unrun check as passed; independently evidenced results must identify their source and applicable revision, not imply local execution.
+- Unexpected failures:
+{BASELINE_FAILURE_INSTRUCTIONS}- With failed checks, report blocked rather than completed, including when an unrelated failure reproduces on the pinned base. Baseline triage does not override the structured completion rules.
 - Do not commit, push, merge, or open a PR.
 - Do not use sudo or destructive Git operations.
 - Stop when the implementation is ready for independent review.
@@ -60,12 +80,18 @@ file counts, or filenames.
 """
 
 
-REVIEW_VALIDATION_INSTRUCTIONS = """Inspect the full diff and requirements, and assess test quality, including
+REVIEW_VALIDATION_INSTRUCTIONS = f"""Inspect the full diff and requirements, and assess test quality, including
 meaningful assertions and missing behavioral, regression, edge-case, failure-path, and invariant coverage
 proportionate to risk. Focused execution does not mean fewer valuable tests; do not discourage thorough
 test creation or use arbitrary test-count targets or caps. Avoid artificial tests for non-testable work.
 Collect a complete batch of substantive actionable findings. Do not stop at the first defect.
 Run targeted tests, including adversarial checks, needed to investigate potential problems.
+Choose checks for changed behavior, directly affected components, and real shared-contract/integration
+boundaries; tie extra neighboring or adversarial probes to a concrete risk. Independently rerun relevant
+tests, including suites the implementer already ran, when independent confirmation is warranted.
+Avoid routinely repeating long, overlapping batches without a distinct risk or evidence to check;
+do not run tangential integration suites just to accumulate validation. This does not waive explicit
+requirements or exhaustive validation, or limit independent investigation of suspected defects.
 The implementer fixes the batch and reruns relevant tests; the same reviewer rechecks fixes and regressions.
 Explicit Linear issue and repository validation requirements remain authoritative under either strategy.
 Distinguish "full regression must pass before merge" or "all tests must pass" from "this agent must run the
@@ -87,6 +113,9 @@ Set each review check's scope to review for validation required locally/on this 
 checks the requirements and validation policy permit deferring until merge. Scope does not imply a pass.
 Executed code checks that fail support findings for implementation corrections. Unavailable mandatory
 validation uses not_run and blocked. Failed checks still require independent passing evidence before clean review.
+{BASELINE_FAILURE_INSTRUCTIONS}An unrelated baseline failure without an authorized in-scope correction requires blocked rather than
+clean; do not invent implementation findings to repair unrelated code. Applicable regressions still
+support findings, and unavailable required checks still require not_run and blocked.
 """
 
 REVIEW_VALIDATION_STRATEGIES = {
