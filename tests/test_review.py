@@ -387,6 +387,7 @@ class ReviewTests(unittest.TestCase):
         for values in (dict(state="uncertain"), dict(state="reviewing"), dict(state="retired"), dict(resumability="no")):
             self.registry.update(first.context_id, state="active", resumability="yes")
             self.registry.update(first.context_id, **values)
+            self.status = "working"
             with self.subTest(values=values), self.assertRaises(TaskError):
                 review("DEV-7", resume=first.context_id)
         self.assertEqual(len(self.panes), 2)
@@ -1395,6 +1396,9 @@ class FakeReviewer:
         return dict(reference)
 
     verify_session = verify_review_session
+
+    def cleanup_provider_idle(self, workspace, reference):
+        pass  # Native provider inactivity is exercised by transport tests.
 
     def observe_delivery(self, execution, reference, receipt, completion):
         return True

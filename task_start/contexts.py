@@ -286,6 +286,19 @@ class ContextRegistry:
                 raise TaskError("Reviewer is stale, retired, busy, or uncertain; inspect its context")
             db.execute("UPDATE contexts SET state='reviewing' WHERE context_id=?", (context["context_id"],))
 
+    def release_review(self, context: dict) -> None:
+        """CAS-release a proven abandoned pass without changing identity/history.
+
+        The caller holds the worktree publication lock throughout runtime proof.
+        """
+        with self.claim_connection(context["repository"], context["worktree"], endpoint=context["endpoint"],
+                                   workspace_id=context["workspace_id"], terminal_id=context["terminal_id"]) as db:
+            current = db.execute("SELECT * FROM contexts WHERE context_id=?", (context["context_id"],)).fetchone()
+            if (current is None or dict(current) != context or context["role"] != "review"
+                    or context["state"] != "reviewing" or context["retired_at"]):
+                raise TaskError("Reviewer claim changed during recovery; inspect its context")
+            db.execute("UPDATE contexts SET state='active' WHERE context_id=?", (context["context_id"],))
+
     def rebind_review_pane(self, context: dict, pane: dict) -> None:
         """Update a relocated terminal, or bind a safely resumed replacement pane.
 
