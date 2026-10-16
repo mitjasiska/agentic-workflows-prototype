@@ -476,7 +476,7 @@ class CodexAdapter(HerdrAgentAdapter):
         args = ["--cd", str(workspace.path)]
         profile = execution.policy.get("codex_profile")
         if profile is not None:
-            args.extend(["--profile", profile])
+            args.extend(["--no-daemon", "--profile", profile])
         if self.options.model is not None:
             args.extend(["--model", self.options.model])
         if self.options.mode is not None:

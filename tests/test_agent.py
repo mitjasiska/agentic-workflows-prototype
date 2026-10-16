@@ -89,7 +89,10 @@ class ConfigurationAndInputTests(unittest.TestCase):
         self.assertEqual(codex_repository_profiles(data), expected)
         self.assertEqual(codex_repository_policy(expected, "agentic-workflows-prototype"),
                          {"codex_profile": "agentic-workflows-lite-trusted"})
-        self.assertEqual(codex_repository_policy(expected, "unlisted"), {})
+        for repository in ["unlisted", "Agentic-workflows-prototype",
+                           "/projects/agentic-workflows-prototype", "agentic-workflows-prototype-extra"]:
+            with self.subTest(repository=repository):
+                self.assertEqual(codex_repository_policy(expected, repository), {})
 
     def test_invalid_codex_repository_profiles_fail_closed(self):
         cases = [
@@ -324,7 +327,7 @@ class AgentTests(unittest.TestCase):
 
     def test_trusted_repository_profile_is_the_only_permission_launch_override(self):
         policy = {"codex_profile": "agentic-workflows-lite-trusted"}
-        self.results[1]["argv"] = ["codex", "--cd", "/exact/checkout", "--profile",
+        self.results[1]["argv"] = ["codex", "--cd", "/exact/checkout", "--no-daemon", "--profile",
                                     "agentic-workflows-lite-trusted", "--model", "custom/model",
                                     "--config", 'model_reasoning_effort="high"', "--", self.bootstrap]
         with patch.object(self.codex, "command", side_effect=self.results) as command:
@@ -334,15 +337,32 @@ class AgentTests(unittest.TestCase):
                          tuple(self.results[1]["argv"][1:]))
         self.assertNotIn("--sandbox", launch)
         self.assertNotIn("--ask-for-approval", launch)
+        self.assertEqual(launch.count("--no-daemon"), 1)
+        self.filter_credentials.assert_called_once_with(self.workspace)
 
     def test_implementation_and_review_share_repository_profile_not_handoff(self):
-        policy = {"codex_profile": "agentic-workflows-lite-trusted"}
         implementation = AgentExecution(self.issue, Path("/resolved/repository"), self.workspace,
-                                        self.codex.options, self.prompt, policy=policy)
+                                        self.codex.options, self.prompt)
         review = replace(implementation, purpose="review",
-                         handoff="Review the prepared changes and report findings only.")
-        self.assertEqual(self.codex.launch_args(implementation, self.bootstrap),
-                         self.codex.launch_args(review, self.bootstrap))
+                         handoff="Read-only review: do not edit or stage files. Report findings only.")
+        for profile in [None, "agentic-workflows-lite-trusted", "other_profile"]:
+            for execution in [implementation, review]:
+                with self.subTest(profile=profile, purpose=execution.purpose):
+                    policy = {} if profile is None else {"codex_profile": profile}
+                    execution = replace(execution, policy=policy)
+                    expected = ["--cd", "/exact/checkout"]
+                    if profile is not None:
+                        expected += ["--no-daemon", "--profile", profile]
+                    expected += ["--model", "custom/model", "--config", 'model_reasoning_effort="high"']
+                    launch = self.codex.launch_args(execution, self.bootstrap)
+                    resume = self.codex.resume_args(execution, {"kind": "id", "value": self.thread_id})
+                    self.assertEqual(launch, [*expected, "--", self.bootstrap])
+                    self.assertEqual(resume, ["resume", *expected, "--", self.thread_id])
+                    self.assertEqual(launch.count("--no-daemon"), int(profile is not None))
+                    self.assertEqual(resume.count("--no-daemon"), int(profile is not None))
+                    self.assertNotIn(execution.handoff, launch)
+                    self.assertNotIn(execution.handoff, resume)
+                    self.assertNotIn(self.bootstrap, resume)
         self.assertNotEqual(implementation.handoff, review.handoff)
 
     def test_invalid_profile_policy_cannot_become_cli_syntax(self):
