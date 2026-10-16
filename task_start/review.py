@@ -104,6 +104,95 @@ def harmless_reviewer_note(context, note, pane):
                 and previously_verified(context)))
 
 
+def recover_reviewer_claim(context, issue, workspace, repo, endpoint, registry, identities):
+    """Reconcile an abandoned claim under the same lock as review and loop.
+
+    Lock ownership excludes the old controller, not a surviving agent. Require
+    exact runtime identity and provider evidence as well; never use pane absence
+    or elapsed time alone. Leave all evidence intact on a refusal.
+    """
+    if context["state"] != "reviewing":
+        return
+    with PublicationStore(workspace.path).locked(allow_owned=True, registry=registry.path):
+        try:
+            if (context["role"] != "review" or context["retired_at"]
+                    or context["issue"] != issue.identifier or context["repository"] != str(repo)
+                    or context["worktree"] != str(workspace.path)
+                    or context["workspace_id"] != workspace.workspace_id
+                    or context["endpoint"] != endpoint or identities.endpoint() != endpoint
+                    or not previously_verified(context)):
+                raise TaskError("reviewer binding or previously verified session is missing/mismatched")
+            reference = context_reference(context)
+            options = AgentOptions(context["agent"], context["model"], context["mode"])
+            adapter = adapter_for(options)
+
+            def runtime():
+                panes = identities.snapshot()
+                pane, notes = reconcile(context, panes, allow_relocation=True)
+                if pane is None:
+                    if notes != ["missing pane"]:
+                        raise TaskError("; ".join(notes))
+                elif (Path(pane.get("cwd", "")).resolve() != workspace.path
+                        or pane.get("launch_pending")
+                        or any(not harmless_reviewer_note(context, note, pane) for note in notes)):
+                    raise TaskError("reviewer runtime is changed or uncertain: " + "; ".join(notes))
+                for other in panes:
+                    if other is pane:
+                        continue
+                    actual = other.get("agent_session")
+                    # Legacy references are session evidence even without an
+                    # agent report. Normalize before filtering by provider.
+                    if isinstance(actual, str):
+                        actual = merge_session(None, actual, context["agent"])
+                    if (other.get("agent") != context["agent"]
+                            and not (isinstance(actual, dict) and actual.get("agent") == context["agent"])):
+                        continue
+                    if actual is None:
+                        raise TaskError("another provider pane has unknown session identity")
+                    if merge_session(None, actual, context["agent"])["value"] == reference["value"]:
+                        raise TaskError("reviewer session is reported in another pane; inspect its terminal")
+                if pane is not None:
+                    if pane.get("agent_status") not in {None, "unknown", "idle", "done"}:
+                        raise TaskError("reviewer runtime may still be busy")
+                    if pane.get("agent") is not None:
+                        if not same_session(reference, pane.get("agent_session"), context["agent"]):
+                            raise TaskError("live reviewer session is unverified")
+                        execution = AgentExecution(issue, repo,
+                            replace(workspace, pane_id=pane["pane_id"], tab_id=pane["tab_id"]),
+                            options, "Reviewer claim recovery", purpose="review", policy=dict(read_only=True))
+                        if adapter.review_status(execution, pane["terminal_id"], reference) not in {"idle", "done"}:
+                            raise TaskError("reviewer is not confirmed idle")
+                    else:
+                        # Reporting absence is not proof that an agent exited.
+                        from .integration_process import stopped_execution
+                        info = identities.command("pane", "process-info", "--pane", pane["pane_id"])["process_info"]
+                        pid = info["shell_pid"]
+                        foreground = info["foreground_processes"]
+                        if (info["pane_id"] != pane["pane_id"] or type(pid) is not int or pid <= 0
+                                or info["foreground_process_group_id"] != pid
+                                or len(foreground) != 1 or foreground[0]["pid"] != pid):
+                            raise TaskError("original reviewer shell is busy or unverified")
+                        stopped_execution([], {pid: dict(argv=foreground[0]["argv"], cwd=workspace.path)})
+
+            runtime()
+            verified = adapter.verify_review_session(workspace, reference)
+            if merge_session(None, verified, context["agent"]) != merge_session(None, reference, context["agent"]):
+                raise TaskError("provider session identity changed")
+            # Reuse the provider inactivity proof used before owned cleanup:
+            # Codex current thread/latest turn/queue, Pi complete terminal history.
+            # Persisted conversation existence alone does not prove inactivity.
+            adapter.cleanup_provider_idle(workspace, reference)
+            # Provider inspection can take time. Recheck the terminal evidence
+            # before the compare-and-set releases this exact claim.
+            if identities.endpoint() != endpoint:
+                raise TaskError("Herdr server changed during recovery")
+            runtime()
+            registry.release_review(context)
+        except (TaskError, OSError, ValueError, KeyError, TypeError) as error:
+            raise TaskError(f"Reviewer {context['context_id']} claim cannot be recovered safely: {error}. "
+                            "Inspect its exact pane/terminal and provider session; claim retained") from None
+
+
 def resolve_reviewer(context_id, issue, workspace, repo, endpoint, registry, identities):
     validate_review_selector(context_id)
     context = registry.get(context_id)
@@ -197,6 +286,9 @@ def review_pass(issue, project, repo, registry, identities, workspace, anchor, b
                 local, resume, agent_kind, model, mode, timeout, store, *, loop_feedback=None,
                 before_handoff=None, pass_observer=None, delivery=None, metrics_context=None, browser=False):
     registry.check_pending_startup(issue.identifier, repo, workspace.path, "review")
+    for item in registry.list(issue.identifier):
+        if item["role"] == "review":
+            recover_reviewer_claim(item, issue, workspace, repo, endpoint, registry, identities)
     context, pane = (resolve_reviewer(resume, issue, workspace, repo, endpoint, registry, identities)
                      if resume is not None else (None, None))
     options = (AgentOptions(context["agent"], context["model"], context["mode"]) if context else

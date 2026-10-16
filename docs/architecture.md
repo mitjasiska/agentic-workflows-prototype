@@ -338,6 +338,16 @@ Review passes use `reviewing` while one caller owns that reviewer; an atomic reg
 claim prevents concurrent follow-ups in the same conversation. Clean, findings,
 blocked, and failed verdicts are not registry lifecycle states. Clean acceptance
 is retained separately in private worktree Git metadata for publication.
+Review and loop preflight can reconcile a retained `reviewing` claim after acquiring
+the same worktree publication lock that excluded the previous controller. Recovery
+also requires the exact previously verified conversation, consistent Herdr
+pane/terminal/session evidence, and provider inactivity proof (Codex thread, latest
+turn and empty queue; Pi intact terminal history). An existing agent must report
+idle/done; an agentless pane needs original-shell/process-family proof. A missing
+pane alone never releases a claim. Recovery compares the complete registry row
+before changing only `reviewing` to `active`; identity, ordinal, history and
+resumability remain intact. Busy, unavailable, changed or ambiguous evidence retains
+the claim and reports the reviewer to inspect.
 A failed fresh review launch retains the `uncertain` allocation and any identity
 already observed by the adapter. It does not run reviewer finalization against a
 possibly unestablished runtime or append a secondary missing-identity error to the

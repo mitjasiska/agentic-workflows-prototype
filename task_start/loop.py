@@ -24,7 +24,7 @@ from .loop_state import (LoopStore, PauseRequested, blocked_review_retry, preser
                          startup_recovery_blocker, unclaimed_existing_boundary)
 from .publication_state import PublicationStore, prepare_review_continuation
 from .preparation import check_issue_structure, prepare_task
-from .review import resolve_review_workspace, resolve_reviewer, review_pass, accept_review
+from .review import resolve_review_workspace, resolve_reviewer, recover_reviewer_claim, review_pass, accept_review
 from .review_result import finding_signature, parse_verdict, pending_review_checks, publication_fingerprint
 from .pass_delivery import PassDelivery, dispose, object_digest, pass_timing
 from .review_state import snapshot
@@ -69,6 +69,7 @@ def idle_reviewers(env, expected=None, *, require_observed_idle=False):
     for item in env.registry.list(env.issue.identifier):
         if item["role"] != "review":
             continue
+        recover_reviewer_claim(item, env.issue, env.workspace, env.repo, env.endpoint, env.registry, env.identities)
         context, pane = resolve_reviewer(item["context_id"], env.issue, env.workspace, env.repo,
                                          env.endpoint, env.registry, env.identities)
         if expected and item["context_id"] == expected["context_id"] and binding(context) != expected:
