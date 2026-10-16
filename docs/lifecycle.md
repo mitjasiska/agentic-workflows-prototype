@@ -627,10 +627,16 @@ rule with the following responsibilities:
 - **Implementer:** create meaningful behavioral, regression, edge-case,
   failure-path, and invariant tests; run changed/relevant tests and additional
   checks justified by risk. Focused execution must not reduce valuable coverage.
+  Prioritize directly affected components and real shared-contract/integration
+  boundaries; tie neighboring checks to a concrete risk rather than accumulating
+  tangential integration runs. Repeat or broaden passing checks only for changed
+  code, new failures, unresolved risks, or explicit requirements.
 - **Independent reviewer:** assess the full diff, requirements, and test quality;
   run targeted checks and adversarial probes justified by the change and available
   evidence. Do not blindly repeat long overlapping suites already evidenced by
   implementation. Batch all substantive findings and recheck fixes and regressions.
+  Independently rerun relevant suites when confirmation is warranted; prior
+  implementation evidence does not limit investigation of suspected defects.
 - **Human PR merge:** require independently reviewed/approved code and passing
   **Fast PR checks** for the current PR revision. Full regression is **not required
   for every ordinary merge**. The green-check requirement still applies when
@@ -698,6 +704,21 @@ permit deferring explicit local/per-pass requirements or `exhaustive` validation
 Executed code checks that fail support `findings` for implementation corrections;
 unavailable mandatory validation is `not_run` and requires `blocked`. A failed
 check still needs independent passing evidence before a clean review.
+
+For unexpected failures that could predate the change, compare the same command
+against the pinned unchanged base when safe and proportionate, using disposable
+state outside the task checkout without changing task Git state or creating a
+branch/worktree. An export must provide the test's needed fixtures, including Git
+metadata when relevant. Record the command/test, exact base SHA, both results, and
+relevant environment differences in `checks` details. If a comparable run is
+impractical or the pinned base is unavailable, record the comparison as `not_run`
+with its reason and the cause as unverified. Matching failures support a baseline
+diagnosis, not proof that current code is safe. Keep every executed failure
+`failed` in its historical record; neither baseline reproduction nor scope triage
+permits `completed` with failed checks or `clean` without required passing evidence.
+Report unrelated baseline limitations as blocked for independent review or separate
+follow-up; do not expand scope or repair unrelated code without authorization.
+Applicable regressions still support findings under the existing result rules.
 
 This is prompt guidance, not controller-enforced proof of command execution. The
 existing result/publication acceptance and Git snapshot safety contracts remain

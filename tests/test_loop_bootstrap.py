@@ -18,7 +18,7 @@ from task_start import HerdrResponseError, TaskError, cli
 from task_start.agent import AgentOptions, Codex, LaunchResult, Pi, adapter_for
 from task_start.config import IssueStructureConfig, load_local
 from task_start.contexts import ContextRegistry, context_reference, now
-from task_start.handoff import implementation_handoff
+from task_start.handoff import IMPLEMENTATION_INSTRUCTIONS, REVIEW_VALIDATION_INSTRUCTIONS, implementation_handoff
 from task_start.integration_process import verify_shell_process
 from task_start.loop import loop, LoopRuntime
 from task_start.loop_state import LoopStore
@@ -1373,7 +1373,9 @@ class BootstrapLoopTests(unittest.TestCase):
 
         for prompt in self.prompts:
             self.assertIn('REVIEW VALIDATION POLICY: focused_first', prompt)
+            self.assertIn(REVIEW_VALIDATION_INSTRUCTIONS, prompt)
         for prompt in self.impl_prompts:
+            self.assertIn(IMPLEMENTATION_INSTRUCTIONS, prompt)
             self.assertIn('test-first / red-green-refactor', prompt)
             self.assertIn('fix the complete batch and rerun relevant tests', prompt)
 
