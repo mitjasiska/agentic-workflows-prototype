@@ -587,7 +587,13 @@ network_access = true
 
 The profile flags were historically verified with Codex CLI 0.157.1 under the old
 repository selector; this is not live verification of the renamed checkout. AWP
-launches it as `codex --cd WORKTREE --profile agentic-workflows-lite-trusted ...`;
+launches it as `codex --cd WORKTREE --no-daemon --profile agentic-workflows-lite-trusted ...`.
+AWP explicitly selects embedded mode for profiled launches, including recreated
+sessions. In Codex 0.162.1, `--profile` already selects embedded mode, but adding
+`--no-daemon` avoids the recurring shared-background-server fallback warning.
+This choice preserves the selected profile and permissions; unprofiled launches
+receive no new option. Live Aquila verification of warning absence, effective
+permissions, and usability without the optional Herdr hook remains pending.
 Codex loads and enforces the profile. `workspace-write` limits writes to the task
 workspace and Codex's temporary roots while keeping protected paths such as
 `.git` and `.codex` read-only. Network access permits commands inside that sandbox
